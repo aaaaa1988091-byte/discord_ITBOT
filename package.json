@@ -1,0 +1,14 @@
+{
+  "name": "discord-itbot-gomoku",
+  "version": "1.0.0",
+  "description": "Discord bot with a Gomoku game activity",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.20.0",
+    "dotenv": "^16.4.5"
+  }
+}
