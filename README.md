@@ -1,13 +1,15 @@
-# Discord 五子棋 Bot
+# Discord 五子棋通話活動 Bot
 
-這是一個使用 `discord.js` 製作的 Discord Activities 風格互動 Bot，提供 `/gomoku` 指令開啟五子棋對局。
+你說得對：這版是**通話活動（Voice Activity）**，不是聊天訊息內嵌棋盤。
 
-## 功能
+Bot 會提供 `/gomoku` 指令，在語音頻道建立一個五子棋 Activity 邀請連結。
 
-- `/gomoku opponent:@user` 建立對局
-- 15x15 棋盤
-- 按鈕操作游標移動、落子、投降
-- 自動判斷連五勝利
+## 需求
+
+1. 你有一個可供嵌入語音活動的五子棋 Activity Application ID
+2. Bot 有該語音頻道的：
+   - View Channel
+   - Create Invite
 
 ## 安裝
 
@@ -16,15 +18,23 @@ npm install
 cp .env.example .env
 ```
 
-填入 `.env`：
+## 環境變數
 
 - `DISCORD_TOKEN`: Bot token
 - `CLIENT_ID`: Discord application client id
+- `GOMOKU_ACTIVITY_APP_ID`: 五子棋活動的 Application ID
 
-## 啟動
+## 使用
+
+1. 啟動 bot
 
 ```bash
 npm start
 ```
 
-Bot 上線後會自動註冊全域 slash command。
+2. 在伺服器輸入：
+
+- `/gomoku`：使用你目前所在語音頻道
+- `/gomoku voice_channel:#你的語音頻道`：指定語音頻道
+
+Bot 會回傳活動邀請連結（`https://discord.gg/...`），點擊即可開啟通話活動。
