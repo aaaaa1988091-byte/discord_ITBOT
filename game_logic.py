@@ -50,6 +50,7 @@ class PlayerState:
     scarcity_bonus_left: dict[str, int] = field(default_factory=dict)
     last_sold_tick: dict[str, int] = field(default_factory=dict)
     ticks: int = 0
+    seeds: dict[str, int] = field(default_factory=dict)
     farm: list[FarmCell] = field(default_factory=list)
     barn: list[BarnSlot] = field(default_factory=list)
 
