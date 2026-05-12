@@ -54,6 +54,7 @@ class PlayerState:
     friends: list[int] = field(default_factory=list)
     visit_cooldowns: dict[str, str] = field(default_factory=dict)
     player_name: str = ""
+    crop_mastery: dict[str, dict[str, int]] = field(default_factory=dict)
     farm: list[FarmCell] = field(default_factory=list)
     barn: list[BarnSlot] = field(default_factory=list)
 

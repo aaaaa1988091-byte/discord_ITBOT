@@ -22,6 +22,7 @@ CROPS = [
 CROP_MAP = {c["name"]: c for c in CROPS}
 GAME: dict[int, PlayerState] = {}
 DATA_DIR = "player_data"
+UI_VERSION: dict[int, int] = {}
 
 
 def get_state(uid: int) -> PlayerState:
@@ -38,8 +39,18 @@ def get_state(uid: int) -> PlayerState:
         s.seeds = {}
         s.friends = []
         s.visit_cooldowns = {}
+        s.crop_mastery = {}
         GAME[uid] = s
     return GAME[uid]
+
+
+def next_ui_version(uid: int) -> int:
+    UI_VERSION[uid] = UI_VERSION.get(uid, 0) + 1
+    return UI_VERSION[uid]
+
+
+def is_ui_active(uid: int, version: int) -> bool:
+    return UI_VERSION.get(uid, 0) == version
 
 
 def state_to_dict(s: PlayerState) -> dict:
@@ -97,18 +108,22 @@ def market_unit_price(state: PlayerState, crop_name: str, level: int) -> tuple[i
 
 
 class FarmMainView(discord.ui.View):
-    def __init__(self, uid: int):
+    def __init__(self, uid: int, version: int):
         super().__init__(timeout=120)
         self.uid = uid
+        self.version = version
         s = get_state(uid)
         for idx, cell in enumerate(s.farm):
             style = discord.ButtonStyle.success if (cell.crop and mature(cell.crop)) else discord.ButtonStyle.secondary
             btn = discord.ui.Button(label=crop_emoji(cell), row=idx // 5, style=style)
 
             async def cb(interaction: discord.Interaction, x=idx):
+                if not is_ui_active(uid, self.version):
+                    await interaction.response.send_message("此 UI 已被新畫面取代。", ephemeral=True)
+                    return
                 await interaction.response.edit_message(
                     content=f"{render_status(get_state(uid))}\n地塊 #{x+1} 操作",
-                    view=CellMenuView(uid, x),
+                    view=CellMenuView(uid, x, self.version),
                     embed=None,
                 )
 
@@ -116,8 +131,9 @@ class FarmMainView(discord.ui.View):
             self.add_item(btn)
 
 class CellActionSelect(discord.ui.Select):
-    def __init__(self, uid: int, idx: int):
+    def __init__(self, uid: int, idx: int, version: int):
         self.uid, self.idx = uid, idx
+        self.version = version
         s = get_state(uid)
         cell = s.farm[idx]
         options: list[discord.SelectOption] = []
@@ -146,28 +162,31 @@ class CellActionSelect(discord.ui.Select):
         super().__init__(placeholder=f"地塊 #{idx+1} 選單", options=options, min_values=1, max_values=1)
 
     async def callback(self, interaction: discord.Interaction):
+        if not is_ui_active(self.uid, self.version):
+            await interaction.response.send_message("此 UI 已被新畫面取代。", ephemeral=True)
+            return
         s = get_state(self.uid)
         cell = s.farm[self.idx]
         action = self.values[0]
 
         if action == "back":
-            await interaction.response.edit_message(content=render_status(s), view=FarmMainView(self.uid), embed=None)
+            await interaction.response.edit_message(content=render_status(s), view=FarmMainView(self.uid, self.version), embed=None)
             return
         if action == "unlock":
             s.scroll -= 1
             cell.unlocked = True
-            await interaction.response.edit_message(content=f"{render_status(s)}\n地塊已解鎖", view=FarmMainView(self.uid), embed=None)
+            await interaction.response.edit_message(content=f"{render_status(s)}\n地塊已解鎖", view=FarmMainView(self.uid, self.version), embed=None)
             return
         if action.startswith("plant:"):
             crop_name = action.split(":", 1)[1]
             if cell.crop is not None or s.seeds.get(crop_name, 0) <= 0 or not consume_stamina(s, 10):
-                await interaction.response.edit_message(content=f"{render_status(s)}\n無法種植", view=CellMenuView(self.uid, self.idx), embed=None)
+                await interaction.response.edit_message(content=f"{render_status(s)}\n無法種植", view=CellMenuView(self.uid, self.idx, self.version), embed=None)
                 return
             crop = CROP_MAP[crop_name]
             now = datetime.now(timezone.utc)
             cell.crop = CropInstance(crop_name, now, now + timedelta(seconds=crop["grow_days"] * DAY_SECONDS))
             s.seeds[crop_name] -= 1
-            await interaction.response.edit_message(content=f"{render_status(s)}\n已種植 {crop['emoji']}{crop_name}", view=FarmMainView(self.uid), embed=None)
+            await interaction.response.edit_message(content=f"{render_status(s)}\n已種植 {crop['emoji']}{crop_name}", view=FarmMainView(self.uid, self.version), embed=None)
             return
         if action == "upgrade":
             if not consume_stamina(s, 10):
@@ -176,57 +195,68 @@ class CellActionSelect(discord.ui.Select):
             s.gold -= 40
             s.poop -= cell.level * 5
             cell.level += 1
-            await interaction.response.edit_message(content=f"{render_status(s)}\n地塊升級 Lv.{cell.level}", view=CellMenuView(self.uid, self.idx), embed=None)
+            await interaction.response.edit_message(content=f"{render_status(s)}\n地塊升級 Lv.{cell.level}", view=CellMenuView(self.uid, self.idx, self.version), embed=None)
             return
         if action == "water":
             now = datetime.now(timezone.utc)
             cooldown_until = getattr(cell, "water_cooldown_until", None)
             if cooldown_until and now < cooldown_until:
                 left = int((cooldown_until - now).total_seconds() / DAY_SECONDS)
-                await interaction.response.edit_message(content=f"澆水冷卻中，剩餘 {left} 日", view=CellMenuView(self.uid, self.idx), embed=None)
+                await interaction.response.edit_message(content=f"澆水冷卻中，剩餘 {left} 日", view=CellMenuView(self.uid, self.idx, self.version), embed=None)
                 return
             speed = timedelta(seconds=WATER_SPEEDUP_DAYS * DAY_SECONDS)
             if cell.crop and cell.crop.grow_until > now:
                 cell.crop.grow_until = max(now, cell.crop.grow_until - speed)
             cell.water_cooldown_until = now + timedelta(seconds=WATER_COOLDOWN_DAYS * DAY_SECONDS)
-            await interaction.response.edit_message(content=f"澆水完成，冷卻 {WATER_COOLDOWN_DAYS} 日", view=CellMenuView(self.uid, self.idx), embed=None)
+            await interaction.response.edit_message(content=f"澆水完成，冷卻 {WATER_COOLDOWN_DAYS} 日", view=CellMenuView(self.uid, self.idx, self.version), embed=None)
             return
         if action == "eat_crop":
             crop = CROP_MAP[cell.crop.crop_name]
             s.fullness = min(100, s.fullness + max(1, int(crop["level"] * 2 * 0.1)))
             cell.crop = None
-            await interaction.response.edit_message(content=f"{render_status(s)}\n已直接吃掉作物", view=FarmMainView(self.uid), embed=None)
+            await interaction.response.edit_message(content=f"{render_status(s)}\n已直接吃掉作物", view=FarmMainView(self.uid, self.version), embed=None)
             return
         if action == "harvest":
             if not cell.crop or not mature(cell.crop) or not consume_stamina(s, 10):
-                await interaction.response.edit_message(content=f"{render_status(s)}\n目前無法收割", view=CellMenuView(self.uid, self.idx), embed=None)
+                await interaction.response.edit_message(content=f"{render_status(s)}\n目前無法收割", view=CellMenuView(self.uid, self.idx, self.version), embed=None)
                 return
             crop = CROP_MAP[cell.crop.crop_name]
+            mastery = s.crop_mastery.setdefault(crop["name"], {"level": 1, "exp": 0})
+            harvest_qty = 1 + max(0, mastery["level"] - 1)
             if cell.nutrients < crop["required_nutrients"]:
                 cell.crop = None
                 s.poop += 1
-                await interaction.response.edit_message(content=f"{render_status(s)}\n養分不足枯萎，獲得💩x1", view=FarmMainView(self.uid), embed=None)
+                await interaction.response.edit_message(content=f"{render_status(s)}\n養分不足枯萎，獲得💩x1", view=FarmMainView(self.uid, self.version), embed=None)
                 return
             cell.nutrients -= crop["required_nutrients"]
             # 收成先進穀倉；若無法存放才直接換金
             stored = False
+            remaining_qty = harvest_qty
             for slot in s.barn:
-                if slot.unlocked and slot.crop_name == crop["name"] and slot.amount < (20 + slot.level * 10):
-                    slot.amount += 1
+                cap = 20 + slot.level * 10
+                if slot.unlocked and slot.crop_name == crop["name"] and slot.amount < cap and remaining_qty > 0:
+                    can_add = min(remaining_qty, cap - slot.amount)
+                    slot.amount += can_add
+                    remaining_qty -= can_add
                     stored = True
-                    break
             if not stored:
                 for slot in s.barn:
-                    if slot.unlocked and slot.crop_name is None:
+                    if slot.unlocked and slot.crop_name is None and remaining_qty > 0:
                         slot.crop_name = crop["name"]
-                        slot.amount = 1
+                        cap = 20 + slot.level * 10
+                        slot.amount = min(remaining_qty, cap)
+                        remaining_qty -= slot.amount
                         stored = True
-                        break
-            if not stored:
-                s.gold += crop["level"] * 10
+            if remaining_qty > 0:
+                s.gold += crop["level"] * 10 * remaining_qty
+            mastery["exp"] += 1
+            need = 20 + crop["level"] * 10
+            if mastery["exp"] >= need:
+                mastery["exp"] = 0
+                mastery["level"] += 1
             cell.crop = None
-            result = "已存入穀倉" if stored else "穀倉滿，已自動換金"
-            await interaction.response.edit_message(content=f"{render_status(s)}\n收割 {crop['emoji']}{crop['name']} 完成（{result}）", view=FarmMainView(self.uid), embed=None)
+            result = "已存入穀倉" if remaining_qty == 0 else f"部分換金 x{remaining_qty}"
+            await interaction.response.edit_message(content=f"{render_status(s)}\n收割 {crop['emoji']}{crop['name']} x{harvest_qty}（{result}）", view=FarmMainView(self.uid, self.version), embed=None)
             return
         if action == "info":
             crop = CROP_MAP[cell.crop.crop_name]
@@ -235,13 +265,13 @@ class CellActionSelect(discord.ui.Select):
             e.add_field(name="作物", value=f"{crop['emoji']}{crop['name']} Lv.{crop['level']}")
             e.add_field(name="養分需求", value=str(crop["required_nutrients"]))
             e.add_field(name="剩餘天數", value=str(rem))
-            await interaction.response.edit_message(content=render_status(s), view=CellMenuView(self.uid, self.idx), embed=e)
+            await interaction.response.edit_message(content=render_status(s), view=CellMenuView(self.uid, self.idx, self.version), embed=e)
 
 
 class CellMenuView(discord.ui.View):
-    def __init__(self, uid: int, idx: int):
+    def __init__(self, uid: int, idx: int, version: int):
         super().__init__(timeout=90)
-        self.add_item(CellActionSelect(uid, idx))
+        self.add_item(CellActionSelect(uid, idx, version))
 
 
 class BarnMainView(discord.ui.View):
@@ -271,7 +301,7 @@ class BarnMainView(discord.ui.View):
     async def back(self, interaction: discord.Interaction, _):
         s = get_state(self.uid)
         if self.origin == "farm":
-            await interaction.response.edit_message(content=render_status(s), view=FarmMainView(self.uid), embed=None)
+            await interaction.response.edit_message(content=render_status(s), view=FarmMainView(self.uid, UI_VERSION.get(self.uid, 0)), embed=None)
         else:
             await interaction.response.edit_message(content=render_status(s), view=FarmUIView(self.uid), embed=None)
 
@@ -418,7 +448,8 @@ bot = Bot()
 async def farm(interaction: discord.Interaction):
     s = get_state(interaction.user.id)
     s.player_name = interaction.user.name
-    await interaction.response.send_message(f"{render_status(s)}\n（農地指令）", view=FarmMainView(interaction.user.id), ephemeral=True)
+    version = next_ui_version(interaction.user.id)
+    await interaction.response.send_message(f"{render_status(s)}\n（農地指令）", view=FarmMainView(interaction.user.id, version), ephemeral=True)
 
 
 class FarmUIView(discord.ui.View):
@@ -449,6 +480,47 @@ class FarmUIView(discord.ui.View):
     @discord.ui.button(label="👥 好友", style=discord.ButtonStyle.primary)
     async def friends(self, interaction: discord.Interaction, _):
         await interaction.response.edit_message(content="好友選單", view=FriendsView(self.uid))
+
+    @discord.ui.button(label="📖 農夫寶典", style=discord.ButtonStyle.secondary)
+    async def codex(self, interaction: discord.Interaction, _):
+        await interaction.response.edit_message(content="農夫寶典", view=FarmerCodexView(self.uid))
+
+
+class FarmerCodexSelect(discord.ui.Select):
+    def __init__(self, uid: int):
+        self.uid = uid
+        s = get_state(uid)
+        options = []
+        for name, m in s.crop_mastery.items():
+            crop = CROP_MAP.get(name, {"emoji": "🌱"})
+            bonus = (m["level"] - 1)
+            options.append(discord.SelectOption(label=f"{crop['emoji']}{name} Lv.{m['level']}（+{bonus}收成）", value=name))
+        if not options:
+            options = [discord.SelectOption(label="尚無熟練度資料", value="none")]
+        options.append(discord.SelectOption(label="返回←", value="back"))
+        super().__init__(placeholder="查看作物熟練度", options=options, min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        s = get_state(self.uid)
+        v = self.values[0]
+        if v == "back":
+            await interaction.response.edit_message(content=render_status(s), view=FarmUIView(self.uid))
+            return
+        if v == "none":
+            await interaction.response.edit_message(content="尚未收割任何作物。", view=FarmerCodexView(self.uid))
+            return
+        m = s.crop_mastery[v]
+        e = discord.Embed(title=f"{v} 熟練度")
+        e.add_field(name="等級", value=str(m["level"]))
+        e.add_field(name="當前增益", value=f"+{m['level']-1} 收成")
+        e.add_field(name="經驗", value=str(m["exp"]))
+        await interaction.response.edit_message(content="農夫寶典", embed=e, view=FarmerCodexView(self.uid))
+
+
+class FarmerCodexView(discord.ui.View):
+    def __init__(self, uid: int):
+        super().__init__(timeout=120)
+        self.add_item(FarmerCodexSelect(uid))
 
 
 class FriendsSelect(discord.ui.Select):
@@ -582,6 +654,7 @@ class VisitFarmView(discord.ui.View):
 async def farmui(interaction: discord.Interaction):
     s = get_state(interaction.user.id)
     s.player_name = interaction.user.name
+    next_ui_version(interaction.user.id)
     await interaction.response.send_message(f"{render_status(s)}\n（功能指令）", view=FarmUIView(interaction.user.id), ephemeral=True)
 
 
