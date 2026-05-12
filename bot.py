@@ -49,6 +49,17 @@ def render_status(s: PlayerState) -> str:
     return f"💰{s.gold} ⚡{s.stamina}/{s.stamina_max} 🍖{s.fullness}/100 | 種籽：{seed_text}"
 
 
+def market_unit_price(state: PlayerState, crop_name: str, level: int) -> tuple[int, int]:
+    pct = 0
+    last_name, streak = state.same_crop_sale_streak
+    if last_name == crop_name and streak >= 10:
+        pct -= 10
+    if state.scarcity_bonus_left.get(crop_name, 0) > 0:
+        pct += 10
+    base = level * 10
+    return int(base * (100 + pct) / 100), pct
+
+
 class FarmMainView(discord.ui.View):
     def __init__(self, uid: int):
         super().__init__(timeout=120)
@@ -207,7 +218,14 @@ class BarnMainView(discord.ui.View):
             btn = discord.ui.Button(label=label, row=idx // 5, style=discord.ButtonStyle.secondary)
 
             async def cb(interaction: discord.Interaction, x=idx):
-                await interaction.response.edit_message(content=f"穀倉欄位 #{x+1} 操作", view=BarnSlotMenuView(self.uid, x), embed=None)
+                slot_data = get_state(self.uid).barn[x]
+                cap = 20 + slot_data.level * 10
+                used = slot_data.amount
+                await interaction.response.edit_message(
+                    content=f"穀倉欄位 #{x+1} 操作（容量 {used}/{cap}，Lv.{slot_data.level}）",
+                    view=BarnSlotMenuView(self.uid, x),
+                    embed=None,
+                )
 
             btn.callback = cb
             self.add_item(btn)
@@ -233,7 +251,8 @@ class BarnSlotSelect(discord.ui.Select):
             if slot.crop_name and slot.amount > 0:
                 crop = CROP_MAP[slot.crop_name]
                 options.append(discord.SelectOption(label=f"吃掉1個 {crop['emoji']}{slot.crop_name}", value="eat"))
-                options.append(discord.SelectOption(label=f"全部賣出 {crop['emoji']}{slot.crop_name}x{slot.amount}", value="sell_all"))
+                unit, pct = market_unit_price(s, slot.crop_name, crop["level"])
+                options.append(discord.SelectOption(label=f"全部賣出 {crop['emoji']}{slot.crop_name}x{slot.amount}（{pct:+d}%）", value="sell_all"))
         options.append(discord.SelectOption(label="返回穀倉←", value="back"))
         super().__init__(placeholder=f"穀倉欄位 #{idx+1} 選單", options=options, min_values=1, max_values=1)
 
@@ -270,17 +289,60 @@ class BarnSlotSelect(discord.ui.Select):
             return
         if action == "sell_all":
             crop = CROP_MAP[slot.crop_name]
-            total = crop["level"] * 10 * slot.amount
-            s.gold += total
-            slot.crop_name = None
-            slot.amount = 0
-            await interaction.response.edit_message(content=f"{render_status(s)}\n賣出完成，獲得 {total} 金幣", view=BarnMainView(self.uid), embed=None)
+            unit, pct = market_unit_price(s, slot.crop_name, crop["level"])
+            total = unit * slot.amount
+            await interaction.response.edit_message(
+                content=f"確認賣出 {crop['emoji']}{slot.crop_name} x{slot.amount}\n單價：{unit}（{pct:+d}%） 總價：{total}",
+                view=SellConfirmView(self.uid, self.idx, unit, pct),
+                embed=None,
+            )
 
 
 class BarnSlotMenuView(discord.ui.View):
     def __init__(self, uid: int, idx: int):
         super().__init__(timeout=90)
         self.add_item(BarnSlotSelect(uid, idx))
+
+
+class SellConfirmView(discord.ui.View):
+    def __init__(self, uid: int, idx: int, unit_price: int, pct: int):
+        super().__init__(timeout=60)
+        self.uid = uid
+        self.idx = idx
+        self.unit_price = unit_price
+        self.pct = pct
+
+    @discord.ui.button(label="確認賣出", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, _):
+        s = get_state(self.uid)
+        slot = s.barn[self.idx]
+        if not slot.crop_name or slot.amount <= 0:
+            await interaction.response.edit_message(content="作物已不存在，請重試。", view=BarnMainView(self.uid), embed=None)
+            return
+        crop_name = slot.crop_name
+        qty = slot.amount
+        total = self.unit_price * qty
+        s.gold += total
+        # 市場過剩/稀缺狀態更新
+        last_name, streak = s.same_crop_sale_streak
+        if last_name == crop_name:
+            s.same_crop_sale_streak = (crop_name, streak + qty)
+        else:
+            s.same_crop_sale_streak = (crop_name, qty)
+        if s.scarcity_bonus_left.get(crop_name, 0) > 0:
+            s.scarcity_bonus_left[crop_name] -= 1
+        s.last_sold_tick[crop_name] = s.ticks
+        slot.crop_name = None
+        slot.amount = 0
+        await interaction.response.edit_message(
+            content=f"{render_status(s)}\n賣出完成：{total} 金幣（單價 {self.unit_price} / {self.pct:+d}%）",
+            view=BarnMainView(self.uid),
+            embed=None,
+        )
+
+    @discord.ui.button(label="取消", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, _):
+        await interaction.response.edit_message(content="已取消賣出。", view=BarnMainView(self.uid), embed=None)
 
 
 class Bot(discord.Client):
@@ -295,10 +357,16 @@ class Bot(discord.Client):
     async def tick(self):
         while not self.is_closed():
             for s in GAME.values():
+                s.ticks += 1
                 if s.stamina < s.stamina_max:
                     s.stamina = min(s.stamina_max, s.stamina + (5 if s.fullness > 0 else 1))
                 if s.stamina < s.stamina_max and s.fullness > 0:
                     s.fullness = max(0, s.fullness - 5)
+                for c in CROPS:
+                    name = c["name"]
+                    last = s.last_sold_tick.get(name, -999999)
+                    if s.ticks - last >= 60 and s.scarcity_bonus_left.get(name, 0) == 0:
+                        s.scarcity_bonus_left[name] = 2
             await asyncio.sleep(10)
 
 
