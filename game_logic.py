@@ -51,6 +51,9 @@ class PlayerState:
     last_sold_tick: dict[str, int] = field(default_factory=dict)
     ticks: int = 0
     seeds: dict[str, int] = field(default_factory=dict)
+    friends: list[int] = field(default_factory=list)
+    visit_cooldowns: dict[str, str] = field(default_factory=dict)
+    player_name: str = ""
     farm: list[FarmCell] = field(default_factory=list)
     barn: list[BarnSlot] = field(default_factory=list)
 

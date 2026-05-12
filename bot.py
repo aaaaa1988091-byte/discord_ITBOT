@@ -1,4 +1,6 @@
 import asyncio
+import json
+import os
 import random
 from datetime import datetime, timedelta, timezone
 
@@ -19,9 +21,12 @@ CROPS = [
 ]
 CROP_MAP = {c["name"]: c for c in CROPS}
 GAME: dict[int, PlayerState] = {}
+DATA_DIR = "player_data"
 
 
 def get_state(uid: int) -> PlayerState:
+    if uid not in GAME:
+        load_player(uid)
     if uid not in GAME:
         s = PlayerState()
         s.init_default_layout()
@@ -31,8 +36,39 @@ def get_state(uid: int) -> PlayerState:
         s.bag_expand = 0
         s.moon_shard = 0
         s.seeds = {}
+        s.friends = []
+        s.visit_cooldowns = {}
         GAME[uid] = s
     return GAME[uid]
+
+
+def state_to_dict(s: PlayerState) -> dict:
+    return {
+        "gold": s.gold, "stamina": s.stamina, "stamina_max": s.stamina_max, "fullness": s.fullness,
+        "moon_shard": s.moon_shard, "scroll": s.scroll, "poop": s.poop, "bag_expand": s.bag_expand,
+        "proficiency_level": s.proficiency_level, "proficiency_exp": s.proficiency_exp, "seeds": s.seeds,
+        "friends": s.friends, "visit_cooldowns": s.visit_cooldowns, "player_name": s.player_name,
+    }
+
+
+def save_all_players() -> None:
+    os.makedirs(DATA_DIR, exist_ok=True)
+    for uid, s in GAME.items():
+        with open(os.path.join(DATA_DIR, f"{uid}.json"), "w", encoding="utf-8") as f:
+            json.dump(state_to_dict(s), f, ensure_ascii=False, indent=2)
+
+
+def load_player(uid: int) -> None:
+    path = os.path.join(DATA_DIR, f"{uid}.json")
+    if not os.path.exists(path):
+        return
+    with open(path, "r", encoding="utf-8") as f:
+        d = json.load(f)
+    s = PlayerState()
+    s.init_default_layout()
+    for k, v in d.items():
+        setattr(s, k, v)
+    GAME[uid] = s
 
 
 def crop_emoji(cell) -> str:
@@ -209,9 +245,10 @@ class CellMenuView(discord.ui.View):
 
 
 class BarnMainView(discord.ui.View):
-    def __init__(self, uid: int):
+    def __init__(self, uid: int, origin: str = "farmui"):
         super().__init__(timeout=120)
         self.uid = uid
+        self.origin = origin
         s = get_state(uid)
         for idx, slot in enumerate(s.barn):
             label = "⬛" if not slot.unlocked else ("🟫" if not slot.crop_name else CROP_MAP.get(slot.crop_name, {"emoji": "🟫"})["emoji"])
@@ -233,7 +270,10 @@ class BarnMainView(discord.ui.View):
     @discord.ui.button(label="返回主選單←", row=2, style=discord.ButtonStyle.secondary)
     async def back(self, interaction: discord.Interaction, _):
         s = get_state(self.uid)
-        await interaction.response.edit_message(content=render_status(s), view=FarmMainView(self.uid), embed=None)
+        if self.origin == "farm":
+            await interaction.response.edit_message(content=render_status(s), view=FarmMainView(self.uid), embed=None)
+        else:
+            await interaction.response.edit_message(content=render_status(s), view=FarmUIView(self.uid), embed=None)
 
 
 class BarnSlotSelect(discord.ui.Select):
@@ -367,6 +407,7 @@ class Bot(discord.Client):
                     last = s.last_sold_tick.get(name, -999999)
                     if s.ticks - last >= 60 and s.scarcity_bonus_left.get(name, 0) == 0:
                         s.scarcity_bonus_left[name] = 2
+            save_all_players()
             await asyncio.sleep(10)
 
 
@@ -376,6 +417,7 @@ bot = Bot()
 @bot.tree.command(name="farm", description="顯示完整農場 UI")
 async def farm(interaction: discord.Interaction):
     s = get_state(interaction.user.id)
+    s.player_name = interaction.user.name
     await interaction.response.send_message(f"{render_status(s)}\n（農地指令）", view=FarmMainView(interaction.user.id), ephemeral=True)
 
 
@@ -402,12 +444,144 @@ class FarmUIView(discord.ui.View):
 
     @discord.ui.button(label="🌾 穀倉", style=discord.ButtonStyle.success)
     async def barn(self, interaction: discord.Interaction, _):
-        await interaction.response.edit_message(content="穀倉 2x5", view=BarnMainView(self.uid))
+        await interaction.response.edit_message(content="穀倉 2x5", view=BarnMainView(self.uid, origin="farmui"))
+
+    @discord.ui.button(label="👥 好友", style=discord.ButtonStyle.primary)
+    async def friends(self, interaction: discord.Interaction, _):
+        await interaction.response.edit_message(content="好友選單", view=FriendsView(self.uid))
+
+
+class FriendsSelect(discord.ui.Select):
+    def __init__(self, uid: int):
+        self.uid = uid
+        s = get_state(uid)
+        options = []
+        for fid in s.friends:
+            fs = get_state(fid)
+            name = fs.player_name or f"user-{fid}"
+            options.append(discord.SelectOption(label=f"{name} (點擊拜訪對方)", value=f"visit:{fid}"))
+        options.append(discord.SelectOption(label="新增好友", value="add"))
+        options.append(discord.SelectOption(label="返回←", value="back"))
+        super().__init__(placeholder="好友功能", options=options, min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        s = get_state(self.uid)
+        action = self.values[0]
+        if action == "back":
+            await interaction.response.edit_message(content=render_status(s), view=FarmUIView(self.uid))
+            return
+        if action == "add":
+            await interaction.response.edit_message(content="新增好友", view=AddFriendView(self.uid))
+            return
+        if action.startswith("visit:"):
+            fid = int(action.split(":")[1])
+            target = get_state(fid)
+            now = datetime.now(timezone.utc)
+            key = str(fid)
+            cool_until = s.visit_cooldowns.get(key)
+            if cool_until and now < datetime.fromisoformat(cool_until):
+                await interaction.response.edit_message(content="拜訪冷卻中（30日）", view=FriendsView(self.uid))
+                return
+            # 拜訪加速 +30% 且不可疊加
+            for cell in target.farm:
+                if cell.crop and cell.crop.grow_until > now:
+                    remaining = cell.crop.grow_until - now
+                    cell.crop.grow_until = now + remaining * 0.7
+            s.visit_cooldowns[key] = (now + timedelta(seconds=30 * DAY_SECONDS)).isoformat()
+            await interaction.response.edit_message(content=f"拜訪 {target.player_name} 的農地", view=VisitFarmView(self.uid, fid))
+
+
+class FriendsView(discord.ui.View):
+    def __init__(self, uid: int):
+        super().__init__(timeout=120)
+        self.add_item(FriendsSelect(uid))
+
+
+class AddFriendSelect(discord.ui.Select):
+    def __init__(self, uid: int):
+        self.uid = uid
+        s = get_state(uid)
+        options = []
+        for pid in list(GAME.keys()):
+            if pid == uid or pid in s.friends:
+                continue
+            ps = get_state(pid)
+            options.append(discord.SelectOption(label=ps.player_name or f"user-{pid}", value=str(pid)))
+        if not options:
+            options = [discord.SelectOption(label="目前無可新增玩家", value="none")]
+        options.append(discord.SelectOption(label="返回←", value="back"))
+        super().__init__(placeholder="選擇要新增的好友", options=options, min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        s = get_state(self.uid)
+        v = self.values[0]
+        if v == "back":
+            await interaction.response.edit_message(content="好友選單", view=FriendsView(self.uid))
+            return
+        if v == "none":
+            await interaction.response.edit_message(content="目前無可新增玩家", view=AddFriendView(self.uid))
+            return
+        pid = int(v)
+        if pid not in s.friends:
+            s.friends.append(pid)
+        await interaction.response.edit_message(content="新增好友完成", view=FriendsView(self.uid))
+
+
+class AddFriendView(discord.ui.View):
+    def __init__(self, uid: int):
+        super().__init__(timeout=120)
+        self.add_item(AddFriendSelect(uid))
+
+
+class VisitCellSelect(discord.ui.Select):
+    def __init__(self, visitor_id: int, owner_id: int, idx: int):
+        self.visitor_id, self.owner_id, self.idx = visitor_id, owner_id, idx
+        super().__init__(
+            placeholder=f"拜訪地塊 #{idx+1}",
+            options=[
+                discord.SelectOption(label="查看基本資訊", value="info"),
+                discord.SelectOption(label="返回←", value="back"),
+            ],
+            min_values=1,
+            max_values=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        owner = get_state(self.owner_id)
+        cell = owner.farm[self.idx]
+        if self.values[0] == "back":
+            await interaction.response.edit_message(content=f"拜訪 {owner.player_name} 的農地", view=VisitFarmView(self.visitor_id, self.owner_id))
+            return
+        e = discord.Embed(title=f"拜訪資訊 地塊#{self.idx+1}")
+        e.add_field(name="等級", value=str(cell.level))
+        e.add_field(name="養分", value=f"{cell.nutrients}/{cell.level*30}")
+        await interaction.response.edit_message(content=f"拜訪 {owner.player_name}", embed=e, view=VisitCellView(self.visitor_id, self.owner_id, self.idx))
+
+
+class VisitCellView(discord.ui.View):
+    def __init__(self, visitor_id: int, owner_id: int, idx: int):
+        super().__init__(timeout=90)
+        self.add_item(VisitCellSelect(visitor_id, owner_id, idx))
+
+
+class VisitFarmView(discord.ui.View):
+    def __init__(self, visitor_id: int, owner_id: int):
+        super().__init__(timeout=120)
+        self.visitor_id = visitor_id
+        owner = get_state(owner_id)
+        for idx, cell in enumerate(owner.farm):
+            style = discord.ButtonStyle.success if (cell.crop and mature(cell.crop)) else discord.ButtonStyle.secondary
+            btn = discord.ui.Button(label=crop_emoji(cell), row=idx // 5, style=style)
+            async def cb(interaction: discord.Interaction, x=idx):
+                await interaction.response.edit_message(content=f"拜訪地塊 #{x+1}", view=VisitCellView(visitor_id, owner_id, x))
+            btn.callback = cb
+            self.add_item(btn)
 
 
 @bot.tree.command(name="farmui", description="顯示背包/轉化爐/穀倉 UI")
 async def farmui(interaction: discord.Interaction):
     s = get_state(interaction.user.id)
+    s.player_name = interaction.user.name
     await interaction.response.send_message(f"{render_status(s)}\n（功能指令）", view=FarmUIView(interaction.user.id), ephemeral=True)
 
 
