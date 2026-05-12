@@ -67,31 +67,6 @@ class FarmMainView(discord.ui.View):
             btn.callback = cb
             self.add_item(btn)
 
-    @discord.ui.button(label="🛍️ 轉化爐", row=4, style=discord.ButtonStyle.primary)
-    async def furnace(self, interaction: discord.Interaction, _):
-        s = get_state(self.uid)
-        if s.gold < 20:
-            await interaction.response.send_message("金幣不足 20。", ephemeral=True)
-            return
-        s.gold -= 20
-        c = random.choice(CROPS)
-        s.seeds[c["name"]] = s.seeds.get(c["name"], 0) + 1
-        await interaction.response.edit_message(
-            content=f"{render_status(s)}\n轉化爐獲得 {c['emoji']}{c['name']} 種籽 x1",
-            view=FarmMainView(self.uid),
-            embed=None,
-        )
-
-    @discord.ui.button(label="🎒 背包", row=4, style=discord.ButtonStyle.secondary)
-    async def bag(self, interaction: discord.Interaction, _):
-        s = get_state(self.uid)
-        await interaction.response.edit_message(content=render_status(s), view=FarmMainView(self.uid), embed=None)
-
-    @discord.ui.button(label="🌾 穀倉", row=4, style=discord.ButtonStyle.success)
-    async def barn(self, interaction: discord.Interaction, _):
-        await interaction.response.edit_message(content="穀倉 2x5", view=BarnMainView(self.uid), embed=None)
-
-
 class CellActionSelect(discord.ui.Select):
     def __init__(self, uid: int, idx: int):
         self.uid, self.idx = uid, idx
@@ -102,7 +77,14 @@ class CellActionSelect(discord.ui.Select):
         if not cell.unlocked:
             if s.scroll >= 1:
                 options.append(discord.SelectOption(label="解鎖(🧾x1)", value="unlock"))
-            options.append(discord.SelectOption(label="返回主選單←", value="back"))
+            options.extend(
+                [
+                    discord.SelectOption(label="🛍️ 轉化爐(20金)", value="furnace"),
+                    discord.SelectOption(label="🎒 背包", value="bag"),
+                    discord.SelectOption(label="🌾 穀倉", value="barn"),
+                    discord.SelectOption(label="返回主選單←", value="back"),
+                ]
+            )
         elif cell.crop is None:
             for name, qty in s.seeds.items():
                 if qty <= 0:
@@ -111,12 +93,26 @@ class CellActionSelect(discord.ui.Select):
                 options.append(discord.SelectOption(label=f"種植{name}{crop['emoji']}(養分{crop['required_nutrients']})", value=f"plant:{name}"))
             if s.stamina >= 10 and s.gold >= 40 and s.poop >= cell.level * 5:
                 options.append(discord.SelectOption(label=f"升級(40金+💩{cell.level*5})", value="upgrade"))
-            options.append(discord.SelectOption(label="返回主選單←", value="back"))
+            options.extend(
+                [
+                    discord.SelectOption(label="🛍️ 轉化爐(20金)", value="furnace"),
+                    discord.SelectOption(label="🎒 背包", value="bag"),
+                    discord.SelectOption(label="🌾 穀倉", value="barn"),
+                    discord.SelectOption(label="返回主選單←", value="back"),
+                ]
+            )
         else:
             options.append(discord.SelectOption(label="澆水(+10%生長速度1日)", value="water"))
             options.append(discord.SelectOption(label="直接吃掉(10%飽食恢復)", value="eat_crop"))
             options.append(discord.SelectOption(label="更多資訊", value="info"))
-            options.append(discord.SelectOption(label="返回主選單←", value="back"))
+            options.extend(
+                [
+                    discord.SelectOption(label="🛍️ 轉化爐(20金)", value="furnace"),
+                    discord.SelectOption(label="🎒 背包", value="bag"),
+                    discord.SelectOption(label="🌾 穀倉", value="barn"),
+                    discord.SelectOption(label="返回主選單←", value="back"),
+                ]
+            )
 
         super().__init__(placeholder=f"地塊 #{idx+1} 選單", options=options, min_values=1, max_values=1)
 
@@ -127,6 +123,21 @@ class CellActionSelect(discord.ui.Select):
 
         if action == "back":
             await interaction.response.edit_message(content=render_status(s), view=FarmMainView(self.uid), embed=None)
+            return
+        if action == "furnace":
+            if s.gold < 20:
+                await interaction.response.edit_message(content=f"{render_status(s)}\n金幣不足 20。", view=CellMenuView(self.uid, self.idx), embed=None)
+                return
+            s.gold -= 20
+            c = random.choice(CROPS)
+            s.seeds[c["name"]] = s.seeds.get(c["name"], 0) + 1
+            await interaction.response.edit_message(content=f"{render_status(s)}\n轉化爐獲得 {c['emoji']}{c['name']} 種籽 x1", view=CellMenuView(self.uid, self.idx), embed=None)
+            return
+        if action == "bag":
+            await interaction.response.edit_message(content=render_status(s), view=CellMenuView(self.uid, self.idx), embed=None)
+            return
+        if action == "barn":
+            await interaction.response.edit_message(content="穀倉 2x5", view=BarnMainView(self.uid), embed=None)
             return
         if action == "unlock":
             s.scroll -= 1
