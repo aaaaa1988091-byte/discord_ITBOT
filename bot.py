@@ -221,7 +221,8 @@ class CellActionSelect(discord.ui.Select):
                 await interaction.response.edit_message(content=f"{render_status(s)}\n目前無法收割", view=CellMenuView(self.uid, self.idx, self.version), embed=None)
                 return
             crop = CROP_MAP[cell.crop.crop_name]
-            prof_level = max(1, min(4, s.proficiency_level))
+            mastery = s.crop_mastery.setdefault(crop["name"], {"level": 1, "exp": 0})
+            prof_level = max(1, min(4, mastery["level"]))
             harvest_qty = 1 + prof_level
             if cell.nutrients < crop["required_nutrients"]:
                 cell.crop = None
@@ -249,11 +250,11 @@ class CellActionSelect(discord.ui.Select):
                         stored = True
             if remaining_qty > 0:
                 s.gold += crop["level"] * 10 * remaining_qty
-            s.proficiency_exp += 1
+            mastery["exp"] += 1
             need = 20 + crop["level"] * 10
-            if s.proficiency_level < 4 and s.proficiency_exp >= need:
-                s.proficiency_exp = 0
-                s.proficiency_level += 1
+            if mastery["level"] < 4 and mastery["exp"] >= need:
+                mastery["exp"] = 0
+                mastery["level"] += 1
             cell.crop = None
             result = "已存入穀倉" if remaining_qty == 0 else f"部分換金 x{remaining_qty}"
             await interaction.response.edit_message(content=f"{render_status(s)}\n收割 {crop['emoji']}{crop['name']} x{harvest_qty}（{result}）", view=FarmMainView(self.uid, self.version), embed=None)
@@ -490,15 +491,19 @@ class FarmerCodexSelect(discord.ui.Select):
     def __init__(self, uid: int):
         self.uid = uid
         s = get_state(uid)
-        level_name = {1: "業餘", 2: "學徒", 3: "農夫", 4: "神農"}.get(s.proficiency_level, "業餘")
-        options = [
-            discord.SelectOption(
-                label=f"熟練等級：{level_name}({s.proficiency_level})",
-                value="profile",
-                description=f"當前效果：收成量 = 1 + {s.proficiency_level}",
-            ),
-            discord.SelectOption(label="返回←", value="back"),
-        ]
+        options = []
+        rank = {1: "業餘", 2: "學徒", 3: "農夫", 4: "神農"}
+        for name, m in s.crop_mastery.items():
+            options.append(
+                discord.SelectOption(
+                    label=f"{name}｜{rank.get(m['level'],'業餘')}({m['level']})",
+                    value=name,
+                    description=f"增益：收成量 = 1 + {m['level']}",
+                )
+            )
+        if not options:
+            options.append(discord.SelectOption(label="尚無熟練度資料", value="none"))
+        options.append(discord.SelectOption(label="返回←", value="back"))
         super().__init__(placeholder="查看作物熟練度", options=options, min_values=1, max_values=1)
 
     async def callback(self, interaction: discord.Interaction):
@@ -507,13 +512,17 @@ class FarmerCodexSelect(discord.ui.Select):
         if v == "back":
             await interaction.response.edit_message(content=render_status(s), view=FarmUIView(self.uid))
             return
-        level_name = {1: "業餘", 2: "學徒", 3: "農夫", 4: "神農"}.get(s.proficiency_level, "業餘")
-        e = discord.Embed(title="農夫寶典｜熟練度")
-        e.add_field(name="熟練等級", value=f"{level_name}({s.proficiency_level})", inline=False)
+        if v == "none":
+            await interaction.response.edit_message(content="尚未收割任何作物。", view=FarmerCodexView(self.uid))
+            return
+        m = s.crop_mastery[v]
+        level_name = {1: "業餘", 2: "學徒", 3: "農夫", 4: "神農"}.get(m["level"], "業餘")
+        e = discord.Embed(title=f"農夫寶典｜{v} 熟練度")
+        e.add_field(name="熟練等級", value=f"{level_name}({m['level']})", inline=False)
         e.add_field(name="經驗獲取", value="成功收割 +1", inline=False)
         e.add_field(name="升級需求", value="20 + (作物等級 × 10)", inline=False)
-        e.add_field(name="當前經驗", value=str(s.proficiency_exp), inline=False)
-        e.add_field(name="當前增益", value=f"成品收成量 = 1 + {s.proficiency_level}", inline=False)
+        e.add_field(name="當前經驗", value=str(m["exp"]), inline=False)
+        e.add_field(name="當前增益", value=f"成品收成量 = 1 + {m['level']}", inline=False)
         await interaction.response.edit_message(content="農夫寶典", embed=e, view=FarmerCodexView(self.uid))
 
 
