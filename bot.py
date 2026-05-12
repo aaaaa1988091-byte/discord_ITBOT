@@ -161,9 +161,25 @@ class CellActionSelect(discord.ui.Select):
                 await interaction.response.edit_message(content=f"{render_status(s)}\n養分不足枯萎，獲得💩x1", view=FarmMainView(self.uid), embed=None)
                 return
             cell.nutrients -= crop["required_nutrients"]
-            s.gold += crop["level"] * 10
+            # 收成先進穀倉；若無法存放才直接換金
+            stored = False
+            for slot in s.barn:
+                if slot.unlocked and slot.crop_name == crop["name"] and slot.amount < (20 + slot.level * 10):
+                    slot.amount += 1
+                    stored = True
+                    break
+            if not stored:
+                for slot in s.barn:
+                    if slot.unlocked and slot.crop_name is None:
+                        slot.crop_name = crop["name"]
+                        slot.amount = 1
+                        stored = True
+                        break
+            if not stored:
+                s.gold += crop["level"] * 10
             cell.crop = None
-            await interaction.response.edit_message(content=f"{render_status(s)}\n收割 {crop['emoji']}{crop['name']} 完成", view=FarmMainView(self.uid), embed=None)
+            result = "已存入穀倉" if stored else "穀倉滿，已自動換金"
+            await interaction.response.edit_message(content=f"{render_status(s)}\n收割 {crop['emoji']}{crop['name']} 完成（{result}）", view=FarmMainView(self.uid), embed=None)
             return
         if action == "info":
             crop = CROP_MAP[cell.crop.crop_name]
@@ -187,13 +203,84 @@ class BarnMainView(discord.ui.View):
         self.uid = uid
         s = get_state(uid)
         for idx, slot in enumerate(s.barn):
-            label = "⬛" if not slot.unlocked else "🟫"
-            self.add_item(discord.ui.Button(label=label, row=idx // 5, style=discord.ButtonStyle.secondary, disabled=True))
+            label = "⬛" if not slot.unlocked else ("🟫" if not slot.crop_name else CROP_MAP.get(slot.crop_name, {"emoji": "🟫"})["emoji"])
+            btn = discord.ui.Button(label=label, row=idx // 5, style=discord.ButtonStyle.secondary)
+
+            async def cb(interaction: discord.Interaction, x=idx):
+                await interaction.response.edit_message(content=f"穀倉欄位 #{x+1} 操作", view=BarnSlotMenuView(self.uid, x), embed=None)
+
+            btn.callback = cb
+            self.add_item(btn)
 
     @discord.ui.button(label="返回主選單←", row=2, style=discord.ButtonStyle.secondary)
     async def back(self, interaction: discord.Interaction, _):
         s = get_state(self.uid)
         await interaction.response.edit_message(content=render_status(s), view=FarmMainView(self.uid), embed=None)
+
+
+class BarnSlotSelect(discord.ui.Select):
+    def __init__(self, uid: int, idx: int):
+        self.uid, self.idx = uid, idx
+        s = get_state(uid)
+        slot = s.barn[idx]
+        options: list[discord.SelectOption] = []
+        if not slot.unlocked:
+            if s.gold >= 40 and s.bag_expand >= 1:
+                options.append(discord.SelectOption(label="解鎖欄位(40金+👜x1)", value="unlock"))
+        else:
+            if slot.level < 4 and s.gold >= 40 and s.bag_expand >= slot.level * 5 and s.stamina >= 10:
+                options.append(discord.SelectOption(label=f"升級欄位(40金+👜x{slot.level*5})", value="upgrade"))
+            if slot.crop_name and slot.amount > 0:
+                crop = CROP_MAP[slot.crop_name]
+                options.append(discord.SelectOption(label=f"吃掉1個 {crop['emoji']}{slot.crop_name}", value="eat"))
+                options.append(discord.SelectOption(label=f"全部賣出 {crop['emoji']}{slot.crop_name}x{slot.amount}", value="sell_all"))
+        options.append(discord.SelectOption(label="返回穀倉←", value="back"))
+        super().__init__(placeholder=f"穀倉欄位 #{idx+1} 選單", options=options, min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        s = get_state(self.uid)
+        slot = s.barn[self.idx]
+        action = self.values[0]
+        if action == "back":
+            await interaction.response.edit_message(content="穀倉 2x5", view=BarnMainView(self.uid), embed=None)
+            return
+        if action == "unlock":
+            s.gold -= 40
+            s.bag_expand -= 1
+            slot.unlocked = True
+            await interaction.response.edit_message(content=f"{render_status(s)}\n穀倉欄位已解鎖", view=BarnMainView(self.uid), embed=None)
+            return
+        if action == "upgrade":
+            cost = slot.level * 5
+            if not consume_stamina(s, 10):
+                await interaction.response.send_message("體力不足", ephemeral=True)
+                return
+            s.gold -= 40
+            s.bag_expand -= cost
+            slot.level += 1
+            await interaction.response.edit_message(content=f"{render_status(s)}\n欄位升級至 Lv.{slot.level}", view=BarnSlotMenuView(self.uid, self.idx), embed=None)
+            return
+        if action == "eat":
+            crop = CROP_MAP[slot.crop_name]
+            slot.amount -= 1
+            s.fullness = min(100, s.fullness + crop["level"] * 2)
+            if slot.amount == 0:
+                slot.crop_name = None
+            await interaction.response.edit_message(content=f"{render_status(s)}\n已吃掉1個作物", view=BarnSlotMenuView(self.uid, self.idx), embed=None)
+            return
+        if action == "sell_all":
+            crop = CROP_MAP[slot.crop_name]
+            total = crop["level"] * 10 * slot.amount
+            s.gold += total
+            slot.crop_name = None
+            slot.amount = 0
+            await interaction.response.edit_message(content=f"{render_status(s)}\n賣出完成，獲得 {total} 金幣", view=BarnMainView(self.uid), embed=None)
+
+
+class BarnSlotMenuView(discord.ui.View):
+    def __init__(self, uid: int, idx: int):
+        super().__init__(timeout=90)
+        self.add_item(BarnSlotSelect(uid, idx))
 
 
 class Bot(discord.Client):
