@@ -41,7 +41,7 @@ def crop_emoji(cell) -> str:
     if cell.crop is None:
         return "🟫"
     crop = CROP_MAP[cell.crop.crop_name]
-    return f"{crop['emoji']}✅" if mature(cell.crop) else f"{crop['emoji']}🌱"
+    return crop["emoji"]
 
 
 def render_status(s: PlayerState) -> str:
@@ -55,7 +55,8 @@ class FarmMainView(discord.ui.View):
         self.uid = uid
         s = get_state(uid)
         for idx, cell in enumerate(s.farm):
-            btn = discord.ui.Button(label=crop_emoji(cell), row=idx // 5, style=discord.ButtonStyle.secondary)
+            style = discord.ButtonStyle.success if (cell.crop and mature(cell.crop)) else discord.ButtonStyle.secondary
+            btn = discord.ui.Button(label=crop_emoji(cell), row=idx // 5, style=style)
 
             async def cb(interaction: discord.Interaction, x=idx):
                 await interaction.response.edit_message(
@@ -77,14 +78,7 @@ class CellActionSelect(discord.ui.Select):
         if not cell.unlocked:
             if s.scroll >= 1:
                 options.append(discord.SelectOption(label="解鎖(🧾x1)", value="unlock"))
-            options.extend(
-                [
-                    discord.SelectOption(label="🛍️ 轉化爐(20金)", value="furnace"),
-                    discord.SelectOption(label="🎒 背包", value="bag"),
-                    discord.SelectOption(label="🌾 穀倉", value="barn"),
-                    discord.SelectOption(label="返回主選單←", value="back"),
-                ]
-            )
+            options.append(discord.SelectOption(label="返回農地←", value="back"))
         elif cell.crop is None:
             for name, qty in s.seeds.items():
                 if qty <= 0:
@@ -93,26 +87,14 @@ class CellActionSelect(discord.ui.Select):
                 options.append(discord.SelectOption(label=f"種植{name}{crop['emoji']}(養分{crop['required_nutrients']})", value=f"plant:{name}"))
             if s.stamina >= 10 and s.gold >= 40 and s.poop >= cell.level * 5:
                 options.append(discord.SelectOption(label=f"升級(40金+💩{cell.level*5})", value="upgrade"))
-            options.extend(
-                [
-                    discord.SelectOption(label="🛍️ 轉化爐(20金)", value="furnace"),
-                    discord.SelectOption(label="🎒 背包", value="bag"),
-                    discord.SelectOption(label="🌾 穀倉", value="barn"),
-                    discord.SelectOption(label="返回主選單←", value="back"),
-                ]
-            )
+            options.append(discord.SelectOption(label="返回農地←", value="back"))
         else:
             options.append(discord.SelectOption(label="澆水(+10%生長速度1日)", value="water"))
             options.append(discord.SelectOption(label="直接吃掉(10%飽食恢復)", value="eat_crop"))
+            if mature(cell.crop) and s.stamina >= 10:
+                options.append(discord.SelectOption(label="收割", value="harvest"))
             options.append(discord.SelectOption(label="更多資訊", value="info"))
-            options.extend(
-                [
-                    discord.SelectOption(label="🛍️ 轉化爐(20金)", value="furnace"),
-                    discord.SelectOption(label="🎒 背包", value="bag"),
-                    discord.SelectOption(label="🌾 穀倉", value="barn"),
-                    discord.SelectOption(label="返回主選單←", value="back"),
-                ]
-            )
+            options.append(discord.SelectOption(label="返回農地←", value="back"))
 
         super().__init__(placeholder=f"地塊 #{idx+1} 選單", options=options, min_values=1, max_values=1)
 
@@ -123,21 +105,6 @@ class CellActionSelect(discord.ui.Select):
 
         if action == "back":
             await interaction.response.edit_message(content=render_status(s), view=FarmMainView(self.uid), embed=None)
-            return
-        if action == "furnace":
-            if s.gold < 20:
-                await interaction.response.edit_message(content=f"{render_status(s)}\n金幣不足 20。", view=CellMenuView(self.uid, self.idx), embed=None)
-                return
-            s.gold -= 20
-            c = random.choice(CROPS)
-            s.seeds[c["name"]] = s.seeds.get(c["name"], 0) + 1
-            await interaction.response.edit_message(content=f"{render_status(s)}\n轉化爐獲得 {c['emoji']}{c['name']} 種籽 x1", view=CellMenuView(self.uid, self.idx), embed=None)
-            return
-        if action == "bag":
-            await interaction.response.edit_message(content=render_status(s), view=CellMenuView(self.uid, self.idx), embed=None)
-            return
-        if action == "barn":
-            await interaction.response.edit_message(content="穀倉 2x5", view=BarnMainView(self.uid), embed=None)
             return
         if action == "unlock":
             s.scroll -= 1
@@ -182,6 +149,21 @@ class CellActionSelect(discord.ui.Select):
             s.fullness = min(100, s.fullness + max(1, int(crop["level"] * 2 * 0.1)))
             cell.crop = None
             await interaction.response.edit_message(content=f"{render_status(s)}\n已直接吃掉作物", view=FarmMainView(self.uid), embed=None)
+            return
+        if action == "harvest":
+            if not cell.crop or not mature(cell.crop) or not consume_stamina(s, 10):
+                await interaction.response.edit_message(content=f"{render_status(s)}\n目前無法收割", view=CellMenuView(self.uid, self.idx), embed=None)
+                return
+            crop = CROP_MAP[cell.crop.crop_name]
+            if cell.nutrients < crop["required_nutrients"]:
+                cell.crop = None
+                s.poop += 1
+                await interaction.response.edit_message(content=f"{render_status(s)}\n養分不足枯萎，獲得💩x1", view=FarmMainView(self.uid), embed=None)
+                return
+            cell.nutrients -= crop["required_nutrients"]
+            s.gold += crop["level"] * 10
+            cell.crop = None
+            await interaction.response.edit_message(content=f"{render_status(s)}\n收割 {crop['emoji']}{crop['name']} 完成", view=FarmMainView(self.uid), embed=None)
             return
         if action == "info":
             crop = CROP_MAP[cell.crop.crop_name]
@@ -239,7 +221,39 @@ bot = Bot()
 @bot.tree.command(name="farm", description="顯示完整農場 UI")
 async def farm(interaction: discord.Interaction):
     s = get_state(interaction.user.id)
-    await interaction.response.send_message(render_status(s), view=FarmMainView(interaction.user.id), ephemeral=True)
+    await interaction.response.send_message(f"{render_status(s)}\n（農地指令）", view=FarmMainView(interaction.user.id), ephemeral=True)
+
+
+class FarmUIView(discord.ui.View):
+    def __init__(self, uid: int):
+        super().__init__(timeout=120)
+        self.uid = uid
+
+    @discord.ui.button(label="🛍️ 轉化爐(20金)", style=discord.ButtonStyle.primary)
+    async def furnace(self, interaction: discord.Interaction, _):
+        s = get_state(self.uid)
+        if s.gold < 20:
+            await interaction.response.edit_message(content=f"{render_status(s)}\n金幣不足 20。", view=FarmUIView(self.uid))
+            return
+        s.gold -= 20
+        c = random.choice(CROPS)
+        s.seeds[c["name"]] = s.seeds.get(c["name"], 0) + 1
+        await interaction.response.edit_message(content=f"{render_status(s)}\n轉化爐獲得 {c['emoji']}{c['name']} 種籽 x1", view=FarmUIView(self.uid))
+
+    @discord.ui.button(label="🎒 背包", style=discord.ButtonStyle.secondary)
+    async def bag(self, interaction: discord.Interaction, _):
+        s = get_state(self.uid)
+        await interaction.response.edit_message(content=render_status(s), view=FarmUIView(self.uid))
+
+    @discord.ui.button(label="🌾 穀倉", style=discord.ButtonStyle.success)
+    async def barn(self, interaction: discord.Interaction, _):
+        await interaction.response.edit_message(content="穀倉 2x5", view=BarnMainView(self.uid))
+
+
+@bot.tree.command(name="farmui", description="顯示背包/轉化爐/穀倉 UI")
+async def farmui(interaction: discord.Interaction):
+    s = get_state(interaction.user.id)
+    await interaction.response.send_message(f"{render_status(s)}\n（功能指令）", view=FarmUIView(interaction.user.id), ephemeral=True)
 
 
 if __name__ == "__main__":
