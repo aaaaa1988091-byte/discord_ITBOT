@@ -96,6 +96,10 @@ def render_status(s: PlayerState) -> str:
     return f"💰{s.gold} ⚡{s.stamina}/{s.stamina_max} 🍖{s.fullness}/100 | 種籽：{seed_text}"
 
 
+def cell_status_text(cell, idx: int) -> str:
+    return f"地塊 #{idx+1}｜Lv.{cell.level}｜養分 {cell.nutrients}/{cell.level*30}"
+
+
 def market_unit_price(state: PlayerState, crop_name: str, level: int) -> tuple[int, int]:
     pct = 0
     last_name, streak = state.same_crop_sale_streak
@@ -122,7 +126,7 @@ class FarmMainView(discord.ui.View):
                     await interaction.response.send_message("此 UI 已被新畫面取代。", ephemeral=True)
                     return
                 await interaction.response.edit_message(
-                    content=f"{render_status(get_state(uid))}\n地塊 #{x+1} 操作",
+                    content=f"{render_status(get_state(uid))}\n{cell_status_text(get_state(uid).farm[x], x)}",
                     view=CellMenuView(uid, x, self.version),
                     embed=None,
                 )
@@ -150,10 +154,14 @@ class CellActionSelect(discord.ui.Select):
                 options.append(discord.SelectOption(label=f"種植{name}{crop['emoji']}(養分{crop['required_nutrients']})", value=f"plant:{name}"))
             if s.stamina >= 10 and s.gold >= 40 and s.poop >= cell.level * 5:
                 options.append(discord.SelectOption(label=f"升級(40金+💩{cell.level*5})", value="upgrade"))
+            if s.stamina >= 10 and s.poop >= 1:
+                options.append(discord.SelectOption(label="施肥(+20養分，💩x1)", value="fertilize"))
             options.append(discord.SelectOption(label="返回農地←", value="back"))
         else:
             options.append(discord.SelectOption(label="澆水(+10%生長速度1日)", value="water"))
             options.append(discord.SelectOption(label="直接吃掉(10%飽食恢復)", value="eat_crop"))
+            if s.stamina >= 10 and s.poop >= 1:
+                options.append(discord.SelectOption(label="施肥(+20養分，💩x1)", value="fertilize"))
             if mature(cell.crop) and s.stamina >= 10:
                 options.append(discord.SelectOption(label="收割", value="harvest"))
             options.append(discord.SelectOption(label="更多資訊", value="info"))
@@ -196,6 +204,22 @@ class CellActionSelect(discord.ui.Select):
             s.poop -= cell.level * 5
             cell.level += 1
             await interaction.response.edit_message(content=f"{render_status(s)}\n地塊升級 Lv.{cell.level}", view=CellMenuView(self.uid, self.idx, self.version), embed=None)
+            return
+        if action == "fertilize":
+            if s.poop < 1 or not consume_stamina(s, 10):
+                await interaction.response.edit_message(
+                    content=f"{render_status(s)}\n{cell_status_text(cell, self.idx)}\n施肥失敗：需要體力10與💩x1",
+                    view=CellMenuView(self.uid, self.idx, self.version),
+                    embed=None,
+                )
+                return
+            s.poop -= 1
+            cell.nutrients = min(cell.level * 30, cell.nutrients + 20)
+            await interaction.response.edit_message(
+                content=f"{render_status(s)}\n{cell_status_text(cell, self.idx)}\n施肥成功：+20 養分",
+                view=CellMenuView(self.uid, self.idx, self.version),
+                embed=None,
+            )
             return
         if action == "water":
             now = datetime.now(timezone.utc)
