@@ -52,6 +52,7 @@ CROPS = [
     {"emoji": "🌹", "name": "番紅花", "level": 6, "grow_days": 210, "required_nutrients": 60},
 ]
 CROP_MAP = {c["name"]: c for c in CROPS}
+LEVEL_WEIGHT = {1: 10, 2: 12, 3: 18, 4: 22, 5: 20, 6: 18}  # 高等級大幅提高抽取權重
 GAME: dict[int, PlayerState] = {}
 DATA_DIR = "player_data"
 UI_VERSION: dict[int, int] = {}
@@ -148,8 +149,14 @@ def market_unit_price(state: PlayerState, crop_name: str, level: int) -> tuple[i
         pct -= 10
     if state.scarcity_bonus_left.get(crop_name, 0) > 0:
         pct += 10
-    base = level * 10
+    # 高等級作物售價大幅提升（體現抽種籽運氣價值）
+    base = int(level * 10 * (1 + level * 0.8))
     return int(base * (100 + pct) / 100), pct
+
+
+def furnace_draw_crop() -> dict:
+    weights = [LEVEL_WEIGHT.get(c["level"], 1) for c in CROPS]
+    return random.choices(CROPS, weights=weights, k=1)[0]
 
 
 class FarmMainView(discord.ui.View):
@@ -324,7 +331,8 @@ class CellActionSelect(discord.ui.Select):
                         remaining_qty -= slot.amount
                         stored = True
             if remaining_qty > 0:
-                s.gold += crop["level"] * 10 * remaining_qty
+                fallback_unit = int(crop["level"] * 10 * (1 + crop["level"] * 0.8))
+                s.gold += fallback_unit * remaining_qty
             mastery["exp"] += 1
             need = easier(20 + crop["level"] * 10)
             if mastery["level"] < 4 and mastery["exp"] >= need:
@@ -549,7 +557,7 @@ class FarmUIView(discord.ui.View):
             await interaction.response.edit_message(content=f"{render_status(s)}\n金幣不足 {furnace_cost}。", view=FarmUIView(self.uid))
             return
         s.gold -= furnace_cost
-        c = random.choice(CROPS)
+        c = furnace_draw_crop()
         s.seeds[c["name"]] = s.seeds.get(c["name"], 0) + 1
         save_player(self.uid)
         await interaction.response.edit_message(content=f"{render_status(s)}\n轉化爐獲得 {c['emoji']}{c['name']} 種籽 x1", view=FarmUIView(self.uid))
