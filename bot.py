@@ -13,6 +13,11 @@ from game_logic import CropInstance, PlayerState, consume_stamina, mature
 DAY_SECONDS = 60
 WATER_COOLDOWN_DAYS = 3
 WATER_SPEEDUP_DAYS = 1
+DIFFICULTY_FACTOR = 0.8  # 降低難度 20%
+
+
+def easier(v: int, min_value: int = 1) -> int:
+    return max(min_value, int(round(v * DIFFICULTY_FACTOR)))
 
 CROPS = [
     {"emoji": "🥕", "name": "胡蘿蔔", "level": 1, "grow_days": 10, "required_nutrients": 10},
@@ -178,9 +183,11 @@ class CellActionSelect(discord.ui.Select):
                 if qty <= 0:
                     continue
                 crop = CROP_MAP[name]
-                options.append(discord.SelectOption(label=f"種植{name}{crop['emoji']}(養分{crop['required_nutrients']})", value=f"plant:{name}"))
-            if s.stamina >= 10 and s.gold >= 40 and s.poop >= cell.level * 5:
-                options.append(discord.SelectOption(label=f"升級(40金+💩{cell.level*5})", value="upgrade"))
+                options.append(discord.SelectOption(label=f"種植{name}{crop['emoji']}(養分{easier(crop['required_nutrients'])})", value=f"plant:{name}"))
+            up_gold = easier(40)
+            up_poop = easier(cell.level * 5)
+            if s.stamina >= 10 and s.gold >= up_gold and s.poop >= up_poop:
+                options.append(discord.SelectOption(label=f"升級({up_gold}金+💩{up_poop})", value="upgrade"))
             if s.stamina >= 10 and s.poop >= 1:
                 options.append(discord.SelectOption(label="施肥(+20養分，💩x1)", value="fertilize"))
             options.append(discord.SelectOption(label="返回農地←", value="back"))
@@ -219,7 +226,7 @@ class CellActionSelect(discord.ui.Select):
                 return
             crop = CROP_MAP[crop_name]
             now = datetime.now(timezone.utc)
-            cell.crop = CropInstance(crop_name, now, now + timedelta(seconds=crop["grow_days"] * DAY_SECONDS))
+            cell.crop = CropInstance(crop_name, now, now + timedelta(seconds=easier(crop["grow_days"]) * DAY_SECONDS))
             s.seeds[crop_name] -= 1
             await interaction.response.edit_message(content=f"{render_status(s)}\n已種植 {crop['emoji']}{crop_name}", view=FarmMainView(self.uid, self.version), embed=None)
             return
@@ -227,8 +234,8 @@ class CellActionSelect(discord.ui.Select):
             if not consume_stamina(s, 10):
                 await interaction.response.send_message("體力不足", ephemeral=True)
                 return
-            s.gold -= 40
-            s.poop -= cell.level * 5
+            s.gold -= easier(40)
+            s.poop -= easier(cell.level * 5)
             cell.level += 1
             await interaction.response.edit_message(content=f"{render_status(s)}\n地塊升級 Lv.{cell.level}", view=CellMenuView(self.uid, self.idx, self.version), embed=None)
             return
@@ -275,12 +282,13 @@ class CellActionSelect(discord.ui.Select):
             mastery = s.crop_mastery.setdefault(crop["name"], {"level": 1, "exp": 0})
             prof_level = max(1, min(4, mastery["level"]))
             harvest_qty = 1 + prof_level
-            if cell.nutrients < crop["required_nutrients"]:
+            req_nutrients = easier(crop["required_nutrients"])
+            if cell.nutrients < req_nutrients:
                 cell.crop = None
                 s.poop += 1
                 await interaction.response.edit_message(content=f"{render_status(s)}\n養分不足枯萎，獲得💩x1", view=FarmMainView(self.uid, self.version), embed=None)
                 return
-            cell.nutrients -= crop["required_nutrients"]
+            cell.nutrients -= req_nutrients
             # 收成先進穀倉；若無法存放才直接換金
             stored = False
             remaining_qty = harvest_qty
@@ -302,7 +310,7 @@ class CellActionSelect(discord.ui.Select):
             if remaining_qty > 0:
                 s.gold += crop["level"] * 10 * remaining_qty
             mastery["exp"] += 1
-            need = 20 + crop["level"] * 10
+            need = easier(20 + crop["level"] * 10)
             if mastery["level"] < 4 and mastery["exp"] >= need:
                 mastery["exp"] = 0
                 mastery["level"] += 1
@@ -365,11 +373,14 @@ class BarnSlotSelect(discord.ui.Select):
         slot = s.barn[idx]
         options: list[discord.SelectOption] = []
         if not slot.unlocked:
-            if s.gold >= 40 and s.bag_expand >= 1:
-                options.append(discord.SelectOption(label="解鎖欄位(40金+👜x1)", value="unlock"))
+            unlock_gold = easier(40)
+            if s.gold >= unlock_gold and s.bag_expand >= 1:
+                options.append(discord.SelectOption(label=f"解鎖欄位({unlock_gold}金+👜x1)", value="unlock"))
         else:
-            if slot.level < 4 and s.gold >= 40 and s.bag_expand >= slot.level * 5 and s.stamina >= 10:
-                options.append(discord.SelectOption(label=f"升級欄位(40金+👜x{slot.level*5})", value="upgrade"))
+            up_gold = easier(40)
+            up_bag = easier(slot.level * 5)
+            if slot.level < 4 and s.gold >= up_gold and s.bag_expand >= up_bag and s.stamina >= 10:
+                options.append(discord.SelectOption(label=f"升級欄位({up_gold}金+👜x{up_bag})", value="upgrade"))
             if slot.crop_name and slot.amount > 0:
                 crop = CROP_MAP[slot.crop_name]
                 options.append(discord.SelectOption(label=f"吃掉1個 {crop['emoji']}{slot.crop_name}", value="eat"))
@@ -386,17 +397,17 @@ class BarnSlotSelect(discord.ui.Select):
             await interaction.response.edit_message(content="穀倉 2x5", view=BarnMainView(self.uid), embed=None)
             return
         if action == "unlock":
-            s.gold -= 40
+            s.gold -= easier(40)
             s.bag_expand -= 1
             slot.unlocked = True
             await interaction.response.edit_message(content=f"{render_status(s)}\n穀倉欄位已解鎖", view=BarnMainView(self.uid), embed=None)
             return
         if action == "upgrade":
-            cost = slot.level * 5
+            cost = easier(slot.level * 5)
             if not consume_stamina(s, 10):
                 await interaction.response.send_message("體力不足", ephemeral=True)
                 return
-            s.gold -= 40
+            s.gold -= easier(40)
             s.bag_expand -= cost
             slot.level += 1
             await interaction.response.edit_message(content=f"{render_status(s)}\n欄位升級至 Lv.{slot.level}", view=BarnSlotMenuView(self.uid, self.idx), embed=None)
@@ -512,10 +523,11 @@ class FarmUIView(discord.ui.View):
     @discord.ui.button(label="🛍️ 轉化爐(20金)", style=discord.ButtonStyle.primary)
     async def furnace(self, interaction: discord.Interaction, _):
         s = get_state(self.uid)
-        if s.gold < 20:
-            await interaction.response.edit_message(content=f"{render_status(s)}\n金幣不足 20。", view=FarmUIView(self.uid))
+        furnace_cost = easier(20)
+        if s.gold < furnace_cost:
+            await interaction.response.edit_message(content=f"{render_status(s)}\n金幣不足 {furnace_cost}。", view=FarmUIView(self.uid))
             return
-        s.gold -= 20
+        s.gold -= furnace_cost
         c = random.choice(CROPS)
         s.seeds[c["name"]] = s.seeds.get(c["name"], 0) + 1
         await interaction.response.edit_message(content=f"{render_status(s)}\n轉化爐獲得 {c['emoji']}{c['name']} 種籽 x1", view=FarmUIView(self.uid))
