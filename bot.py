@@ -16,8 +16,35 @@ WATER_SPEEDUP_DAYS = 1
 
 CROPS = [
     {"emoji": "🥕", "name": "胡蘿蔔", "level": 1, "grow_days": 10, "required_nutrients": 10},
+    {"emoji": "🌾", "name": "小麥", "level": 1, "grow_days": 7, "required_nutrients": 10},
+    {"emoji": "🥔", "name": "馬鈴薯", "level": 1, "grow_days": 12, "required_nutrients": 10},
+    {"emoji": "🧅", "name": "洋蔥", "level": 1, "grow_days": 18, "required_nutrients": 10},
+    {"emoji": "🥬", "name": "高麗菜", "level": 1, "grow_days": 11, "required_nutrients": 10},
     {"emoji": "🍆", "name": "茄子", "level": 2, "grow_days": 20, "required_nutrients": 20},
+    {"emoji": "🌽", "name": "玉米", "level": 2, "grow_days": 20, "required_nutrients": 20},
+    {"emoji": "🍅", "name": "番茄", "level": 2, "grow_days": 25, "required_nutrients": 20},
+    {"emoji": "🥦", "name": "花椰菜", "level": 2, "grow_days": 14, "required_nutrients": 20},
+    {"emoji": "🧄", "name": "大蒜", "level": 2, "grow_days": 30, "required_nutrients": 20},
+    {"emoji": "🫑", "name": "甜椒", "level": 2, "grow_days": 22, "required_nutrients": 20},
+    {"emoji": "🥒", "name": "黃瓜", "level": 2, "grow_days": 15, "required_nutrients": 20},
+    {"emoji": "🫘", "name": "黃豆", "level": 2, "grow_days": 16, "required_nutrients": 20},
     {"emoji": "🍉", "name": "西瓜", "level": 3, "grow_days": 45, "required_nutrients": 30},
+    {"emoji": "🌶️", "name": "辣椒", "level": 3, "grow_days": 28, "required_nutrients": 30},
+    {"emoji": "🎃", "name": "南瓜", "level": 3, "grow_days": 40, "required_nutrients": 30},
+    {"emoji": "🍓", "name": "草莓", "level": 3, "grow_days": 30, "required_nutrients": 30},
+    {"emoji": "🌻", "name": "向日葵", "level": 3, "grow_days": 35, "required_nutrients": 30},
+    {"emoji": "🫐", "name": "藍莓", "level": 4, "grow_days": 60, "required_nutrients": 40},
+    {"emoji": "🍇", "name": "葡萄", "level": 4, "grow_days": 90, "required_nutrients": 40},
+    {"emoji": "🍈", "name": "哈密瓜", "level": 4, "grow_days": 55, "required_nutrients": 40},
+    {"emoji": "🥝", "name": "奇異果", "level": 4, "grow_days": 75, "required_nutrients": 40},
+    {"emoji": "🍋", "name": "檸檬", "level": 4, "grow_days": 120, "required_nutrients": 40},
+    {"emoji": "🍑", "name": "水蜜桃", "level": 5, "grow_days": 100, "required_nutrients": 50},
+    {"emoji": "🍒", "name": "櫻桃", "level": 5, "grow_days": 90, "required_nutrients": 50},
+    {"emoji": "🥭", "name": "芒果", "level": 5, "grow_days": 110, "required_nutrients": 50},
+    {"emoji": "🍍", "name": "鳳梨", "level": 5, "grow_days": 150, "required_nutrients": 50},
+    {"emoji": "🥥", "name": "椰子", "level": 6, "grow_days": 365, "required_nutrients": 60},
+    {"emoji": "🍄", "name": "松露", "level": 6, "grow_days": 180, "required_nutrients": 60},
+    {"emoji": "🌹", "name": "番紅花", "level": 6, "grow_days": 210, "required_nutrients": 60},
 ]
 CROP_MAP = {c["name"]: c for c in CROPS}
 GAME: dict[int, PlayerState] = {}
@@ -147,7 +174,7 @@ class CellActionSelect(discord.ui.Select):
                 options.append(discord.SelectOption(label="解鎖(🧾x1)", value="unlock"))
             options.append(discord.SelectOption(label="返回農地←", value="back"))
         elif cell.crop is None:
-            for name, qty in s.seeds.items():
+            for name, qty in sorted(s.seeds.items(), key=lambda kv: (CROP_MAP[kv[0]]["level"], kv[0])):
                 if qty <= 0:
                     continue
                 crop = CROP_MAP[name]
