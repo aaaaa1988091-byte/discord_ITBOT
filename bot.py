@@ -277,10 +277,12 @@ class CellActionSelect(discord.ui.Select):
                 )
                 return
             s.poop -= 1
+            before = cell.nutrients
             cell.nutrients = min(cell.level * 30, cell.nutrients + 20)
+            gain = cell.nutrients - before
             save_player(self.uid)
             await interaction.response.edit_message(
-                content=f"{render_status(s)}\n{cell_status_text(cell, self.idx)}\n施肥成功：+20 養分",
+                content=f"{render_status(s)}\n{cell_status_text(cell, self.idx)}\n施肥成功：+{gain} 養分",
                 view=CellMenuView(self.uid, self.idx, self.version),
                 embed=None,
             )
@@ -559,7 +561,7 @@ class FarmUIView(discord.ui.View):
         super().__init__(timeout=120)
         self.uid = uid
 
-    @discord.ui.button(label="🛍️ 轉化爐(20金)", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="🛍️ 轉化爐", style=discord.ButtonStyle.primary)
     async def furnace(self, interaction: discord.Interaction, _):
         s = get_state(self.uid)
         furnace_cost = easier(20)
@@ -572,7 +574,7 @@ class FarmUIView(discord.ui.View):
         s.seeds[c["name"]] = s.seeds.get(c["name"], 0) + amount
         save_player(self.uid)
         await interaction.response.edit_message(
-            content=f"{render_status(s)}\n轉化爐獲得 {c['emoji']}{c['name']} 種籽 x{amount}（{LEVEL_TAG.get(c['level'],'普通')}）",
+            content=f"{render_status(s)}\n轉化爐花費 {furnace_cost} 金幣，獲得 {c['emoji']}{c['name']} 種籽 x{amount}（{LEVEL_TAG.get(c['level'],'普通')}）",
             view=FarmUIView(self.uid),
         )
 
@@ -624,10 +626,12 @@ class FarmerCodexSelect(discord.ui.Select):
             return
         m = s.crop_mastery[v]
         level_name = {1: "業餘", 2: "學徒", 3: "農夫", 4: "神農"}.get(m["level"], "業餘")
+        crop_level = CROP_MAP.get(v, {"level": 1})["level"]
+        need_exp = easier(20 + crop_level * 10)
         e = discord.Embed(title=f"農夫寶典｜{v} 熟練度")
         e.add_field(name="熟練等級", value=f"{level_name}({m['level']})", inline=False)
         e.add_field(name="經驗獲取", value="成功收割 +1", inline=False)
-        e.add_field(name="升級需求", value="20 + (作物等級 × 10)", inline=False)
+        e.add_field(name="升級需求", value=f"目前需求 {need_exp}（基礎公式：20 + 作物等級×10，含難度調整）", inline=False)
         e.add_field(name="當前經驗", value=str(m["exp"]), inline=False)
         e.add_field(name="當前增益", value=f"成品收成量 = 1 + {m['level']}", inline=False)
         await interaction.response.edit_message(content="農夫寶典", embed=e, view=FarmerCodexView(self.uid))
