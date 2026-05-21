@@ -133,6 +133,12 @@ def load_player(uid: int) -> None:
 def crop_emoji(cell) -> str:
     if not cell.unlocked:
         return "⬛"
+    if getattr(cell, "machine", None) == "typhoon":
+        return "⛈️"
+    if getattr(cell, "machine", None) == "billboard":
+        return "🪧"
+    if getattr(cell, "machine", None) == "lobster":
+        return "🦞"
     if cell.crop is None:
         return "🟫"
     crop = CROP_MAP[cell.crop.crop_name]
@@ -174,6 +180,17 @@ def furnace_seed_amount(crop_level: int) -> int:
     return 1
 
 
+def neighbors_3x3(idx: int) -> list[int]:
+    r, c = divmod(idx, 5)
+    out = []
+    for dr in (-1, 0, 1):
+        for dc in (-1, 0, 1):
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 5 and 0 <= nc < 5:
+                out.append(nr * 5 + nc)
+    return out
+
+
 class FarmMainView(discord.ui.View):
     def __init__(self, uid: int, version: int):
         super().__init__(timeout=120)
@@ -181,7 +198,16 @@ class FarmMainView(discord.ui.View):
         self.version = version
         s = get_state(uid)
         for idx, cell in enumerate(s.farm):
-            style = discord.ButtonStyle.success if (cell.crop and mature(cell.crop)) else discord.ButtonStyle.secondary
+            wet = getattr(cell, "wet_until", None)
+            is_wet = wet and datetime.now(timezone.utc) < wet
+            if not cell.unlocked:
+                style = discord.ButtonStyle.secondary
+            elif is_wet:
+                style = discord.ButtonStyle.primary
+            elif cell.crop and mature(cell.crop):
+                style = discord.ButtonStyle.success
+            else:
+                style = discord.ButtonStyle.secondary
             btn = discord.ui.Button(label=crop_emoji(cell), row=idx // 5, style=style)
 
             async def cb(interaction: discord.Interaction, x=idx):
@@ -209,7 +235,7 @@ class CellActionSelect(discord.ui.Select):
             if s.materials.get("scroll",0) >= 1:
                 options.append(discord.SelectOption(label="解鎖(🧾x1)", value="unlock"))
             options.append(discord.SelectOption(label="返回農地←", value="back"))
-        elif cell.crop is None:
+        elif cell.crop is None and getattr(cell, "machine", None) not in ("typhoon", "billboard"):
             for name, qty in sorted(s.seeds.items(), key=lambda kv: (CROP_MAP[kv[0]]["level"], kv[0])):
                 if qty <= 0:
                     continue
@@ -231,6 +257,8 @@ class CellActionSelect(discord.ui.Select):
                 options.append(discord.SelectOption(label="收割", value="harvest"))
             options.append(discord.SelectOption(label="更多資訊", value="info"))
             options.append(discord.SelectOption(label="返回農地←", value="back"))
+        if getattr(cell, "machine", None) in ("typhoon", "billboard", "lobster"):
+            options.append(discord.SelectOption(label="拆除農機具", value="remove_machine"))
 
         super().__init__(placeholder=f"地塊 #{idx+1} 選單", options=options, min_values=1, max_values=1)
 
@@ -303,8 +331,21 @@ class CellActionSelect(discord.ui.Select):
             if cell.crop and cell.crop.grow_until > now:
                 cell.crop.grow_until = max(now, cell.crop.grow_until - speed)
             cell.water_cooldown_until = now + timedelta(seconds=WATER_COOLDOWN_DAYS * DAY_SECONDS)
+            cell.wet_until = cell.water_cooldown_until
             save_player(self.uid)
             await interaction.response.edit_message(content=f"澆水完成，冷卻 {WATER_COOLDOWN_DAYS} 日", view=CellMenuView(self.uid, self.idx, self.version), embed=None)
+            return
+        if action == "remove_machine":
+            m = getattr(cell, "machine", None)
+            if m == "typhoon":
+                s.machines["typhoon"] = s.machines.get("typhoon", 0) + 1
+            elif m == "billboard":
+                s.machines["billboard"] = s.machines.get("billboard", 0) + 1
+            elif m == "lobster":
+                s.materials["lobster"] = s.materials.get("lobster", 0) + 1
+            cell.machine = None
+            save_player(self.uid)
+            await interaction.response.edit_message(content=f"{render_status(s)}\n已拆除農機具", view=FarmMainView(self.uid, self.version), embed=None)
             return
         if action == "eat_crop":
             crop = CROP_MAP[cell.crop.crop_name]
@@ -554,6 +595,29 @@ class Bot(discord.Client):
                     last = s.last_sold_tick.get(name, -999999)
                     if s.ticks - last >= 60 and s.scarcity_bonus_left.get(name, 0) == 0:
                         s.scarcity_bonus_left[name] = 2
+                # 農機具自動化
+                for i, cell in enumerate(s.farm):
+                    machine = getattr(cell, "machine", None)
+                    if machine == "typhoon":
+                        for ni in neighbors_3x3(i):
+                            s.farm[ni].wet_until = datetime.now(timezone.utc) + timedelta(seconds=WATER_COOLDOWN_DAYS * DAY_SECONDS)
+                    elif machine == "billboard":
+                        for ni in neighbors_3x3(i):
+                            c2 = s.farm[ni]
+                            c2.nutrients = min(c2.level * 30, c2.nutrients + 20)
+                    elif machine == "lobster":
+                        # 1x1：所在格
+                        if cell.crop and mature(cell.crop):
+                            cname = cell.crop.crop_name
+                            cell.crop = None
+                            s.seeds[cname] = max(0, s.seeds.get(cname, 0) - 1)
+                        if cell.crop is None:
+                            cfg = getattr(s, "lobster_cfg", {}).get(str(i))
+                            if cfg and s.seeds.get(cfg, 0) > 0:
+                                crop = CROP_MAP[cfg]
+                                now = datetime.now(timezone.utc)
+                                cell.crop = CropInstance(cfg, now, now + timedelta(seconds=easier(crop["grow_days"]) * DAY_SECONDS))
+                                s.seeds[cfg] -= 1
             save_all_players()
             await asyncio.sleep(10)
 
@@ -830,8 +894,41 @@ class CraftView(discord.ui.View):
 class ToolsView(discord.ui.View):
     def __init__(self,uid:int):
         super().__init__(timeout=120); self.uid=uid
-        self.add_item(discord.ui.Button(label="返回←",style=discord.ButtonStyle.secondary,row=0))
-        self.children[0].callback=lambda i: i.response.edit_message(content=render_status(get_state(uid)),view=FarmUIView(uid))
+        self.add_item(ToolsSelect(uid))
+
+class ToolsSelect(discord.ui.Select):
+    def __init__(self, uid:int):
+        self.uid=uid
+        s=get_state(uid)
+        opts=[]
+        for i,c in enumerate(s.farm):
+            if not c.unlocked:
+                continue
+            if getattr(c,"machine",None) in ("typhoon","billboard","lobster"):
+                continue
+            opts.append(discord.SelectOption(label=f"佈置到地塊#{i+1}", value=f"cell:{i}"))
+        if s.machines.get("typhoon",0)>0: opts.append(discord.SelectOption(label="選擇佈置 ⛈️颱風眼催發器", value="pick:typhoon"))
+        if s.machines.get("billboard",0)>0: opts.append(discord.SelectOption(label="選擇佈置 🪧電影廣告招牌", value="pick:billboard"))
+        if s.materials.get("lobster",0)>0: opts.append(discord.SelectOption(label="選擇佈置 🦞龍蝦", value="pick:lobster"))
+        opts.append(discord.SelectOption(label="返回←", value="back"))
+        super().__init__(placeholder="農機具管理", options=opts[:25], min_values=1, max_values=1)
+    async def callback(self,interaction):
+        s=get_state(self.uid); v=self.values[0]
+        if v=="back":
+            return await interaction.response.edit_message(content=render_status(s),view=FarmUIView(self.uid))
+        if v.startswith("pick:"):
+            s.tool_pick=v.split(":")[1]; save_player(self.uid)
+            return await interaction.response.edit_message(content=f"已選擇 {s.tool_pick}，再選地塊佈置", view=ToolsView(self.uid))
+        if v.startswith("cell:"):
+            idx=int(v.split(":")[1]); c=s.farm[idx]; pick=getattr(s,"tool_pick",None)
+            if not pick: return await interaction.response.edit_message(content="請先選擇要佈置的農機具", view=ToolsView(self.uid))
+            c.machine=pick
+            if pick=="typhoon": s.machines["typhoon"]=max(0,s.machines.get("typhoon",0)-1)
+            elif pick=="billboard": s.machines["billboard"]=max(0,s.machines.get("billboard",0)-1)
+            elif pick=="lobster": s.materials["lobster"]=max(0,s.materials.get("lobster",0)-1)
+            s.tool_pick=None
+            save_player(self.uid)
+            return await interaction.response.edit_message(content=f"已佈置 {pick} 到地塊#{idx+1}", view=FarmUIView(self.uid))
 
 if __name__ == "__main__":
     import os
