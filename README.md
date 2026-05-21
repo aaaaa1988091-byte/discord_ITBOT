@@ -2,14 +2,23 @@
 
 你說得對：這版是**通話活動（Voice Activity）**，不是聊天訊息內嵌棋盤。
 
-Bot 會提供 `/gomoku` 指令，在語音頻道建立一個五子棋 Activity 邀請連結。
+Bot 會提供 `/gomoku` 指令，在語音頻道建立五子棋 Activity 邀請連結。
+
+## Application ID 是什麼？
+
+你問的 **Application ID** 指的是 Discord 應用程式 ID。
+
+- `CLIENT_ID`：你的 Discord 應用程式 ID（通常就是 bot 的 app id）
+- `GOMOKU_ACTIVITY_APP_ID`：**可選**，只有在你要指定「另一個」Activity 應用程式時才需要
+
+> 一般情況可只填 `CLIENT_ID`，不需要再找第二個 ID。
 
 ## 需求
 
-1. 你有一個可供嵌入語音活動的五子棋 Activity Application ID
-2. Bot 有該語音頻道的：
+1. Bot 有該語音頻道權限：
    - View Channel
    - Create Invite
+2. 伺服器允許啟動 Activities
 
 ## 安裝
 
@@ -21,8 +30,8 @@ cp .env.example .env
 ## 環境變數
 
 - `DISCORD_TOKEN`: Bot token
-- `CLIENT_ID`: Discord application client id
-- `GOMOKU_ACTIVITY_APP_ID`: 五子棋活動的 Application ID
+- `CLIENT_ID`: Discord application client id（必填）
+- `GOMOKU_ACTIVITY_APP_ID`: 指定其他 Activity app id（選填）
 
 ## 使用
 

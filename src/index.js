@@ -38,7 +38,7 @@ async function createActivityInvite(voiceChannelId) {
       max_uses: 0,
       temporary: false,
       target_type: 2,
-      target_application_id: process.env.GOMOKU_ACTIVITY_APP_ID,
+      target_application_id: process.env.GOMOKU_ACTIVITY_APP_ID || process.env.CLIENT_ID,
     },
   });
 }
@@ -90,13 +90,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
   } catch (error) {
     console.error(error);
     await interaction.editReply(
-      '建立活動失敗。請確認 `GOMOKU_ACTIVITY_APP_ID` 是否正確，且機器人具備該頻道邀請權限。'
+      '建立活動失敗。若你是用自建 Activity，請確認 `GOMOKU_ACTIVITY_APP_ID`；否則可不填並直接使用 `CLIENT_ID`。同時確認機器人具備該頻道邀請權限。'
     );
   }
 });
 
-if (!process.env.DISCORD_TOKEN || !process.env.CLIENT_ID || !process.env.GOMOKU_ACTIVITY_APP_ID) {
-  throw new Error('請設定 DISCORD_TOKEN、CLIENT_ID、GOMOKU_ACTIVITY_APP_ID 環境變數。');
+if (!process.env.DISCORD_TOKEN || !process.env.CLIENT_ID) {
+  throw new Error('請設定 DISCORD_TOKEN 與 CLIENT_ID 環境變數。');
 }
 
 client.login(process.env.DISCORD_TOKEN);
