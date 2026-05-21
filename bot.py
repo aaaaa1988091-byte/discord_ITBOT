@@ -53,6 +53,7 @@ CROPS = [
 ]
 CROP_MAP = {c["name"]: c for c in CROPS}
 LEVEL_WEIGHT = {1: 10, 2: 12, 3: 18, 4: 22, 5: 20, 6: 18}  # 高等級大幅提高抽取權重
+LEVEL_TAG = {1: "普通", 2: "良好", 3: "稀有", 4: "史詩", 5: "傳說", 6: "神話"}
 GAME: dict[int, PlayerState] = {}
 DATA_DIR = "player_data"
 UI_VERSION: dict[int, int] = {}
@@ -157,6 +158,15 @@ def market_unit_price(state: PlayerState, crop_name: str, level: int) -> tuple[i
 def furnace_draw_crop() -> dict:
     weights = [LEVEL_WEIGHT.get(c["level"], 1) for c in CROPS]
     return random.choices(CROPS, weights=weights, k=1)[0]
+
+
+def furnace_seed_amount(crop_level: int) -> int:
+    # 高等級更有機率一次掉 2 顆，強化「抽卡運氣感」
+    if crop_level >= 5 and random.random() < 0.35:
+        return 2
+    if crop_level >= 3 and random.random() < 0.15:
+        return 2
+    return 1
 
 
 class FarmMainView(discord.ui.View):
@@ -558,9 +568,13 @@ class FarmUIView(discord.ui.View):
             return
         s.gold -= furnace_cost
         c = furnace_draw_crop()
-        s.seeds[c["name"]] = s.seeds.get(c["name"], 0) + 1
+        amount = furnace_seed_amount(c["level"])
+        s.seeds[c["name"]] = s.seeds.get(c["name"], 0) + amount
         save_player(self.uid)
-        await interaction.response.edit_message(content=f"{render_status(s)}\n轉化爐獲得 {c['emoji']}{c['name']} 種籽 x1", view=FarmUIView(self.uid))
+        await interaction.response.edit_message(
+            content=f"{render_status(s)}\n轉化爐獲得 {c['emoji']}{c['name']} 種籽 x{amount}（{LEVEL_TAG.get(c['level'],'普通')}）",
+            view=FarmUIView(self.uid),
+        )
 
     @discord.ui.button(label="🎒 背包", style=discord.ButtonStyle.secondary)
     async def bag(self, interaction: discord.Interaction, _):
