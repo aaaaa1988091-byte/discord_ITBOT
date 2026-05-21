@@ -265,6 +265,12 @@ class CellActionSelect(discord.ui.Select):
                 options.append(discord.SelectOption(label=f"升級({up_gold}金+💩{up_poop})", value="upgrade"))
             if s.stamina >= 10 and s.materials.get("poop",0) >= 1:
                 options.append(discord.SelectOption(label="施肥(+20養分，💩x1)", value="fertilize"))
+            if s.machines.get("typhoon", 0) > 0:
+                options.append(discord.SelectOption(label="佈置 ⛈️颱風眼催發器", value="place:typhoon"))
+            if s.machines.get("billboard", 0) > 0:
+                options.append(discord.SelectOption(label="佈置 🪧電影廣告招牌", value="place:billboard"))
+            if s.materials.get("lobster", 0) > 0:
+                options.append(discord.SelectOption(label="佈置 🦞龍蝦", value="place:lobster"))
             options.append(discord.SelectOption(label="返回農地←", value="back"))
         else:
             options.append(discord.SelectOption(label="澆水(+10%生長速度1日)", value="water"))
@@ -275,6 +281,8 @@ class CellActionSelect(discord.ui.Select):
                 options.append(discord.SelectOption(label="收割", value="harvest"))
             options.append(discord.SelectOption(label="更多資訊", value="info"))
             options.append(discord.SelectOption(label="返回農地←", value="back"))
+        if getattr(cell, "machine", None) == "lobster":
+            options.append(discord.SelectOption(label="設定🦞單一種籽", value="cfg_lobster"))
         if getattr(cell, "machine", None) in ("typhoon", "billboard", "lobster"):
             options.append(discord.SelectOption(label="拆除農機具", value="remove_machine"))
 
@@ -309,6 +317,24 @@ class CellActionSelect(discord.ui.Select):
             save_player(self.uid)
             await interaction.response.edit_message(content=f"{render_status(s)}\n已種植 {crop['emoji']}{crop_name}", view=FarmMainView(self.uid, self.version), embed=None)
             return
+        if action.startswith("place:"):
+            tool = action.split(":", 1)[1]
+            if tool == "typhoon":
+                if s.machines.get("typhoon", 0) <= 0:
+                    return await interaction.response.edit_message(content=f"{render_status(s)}\n沒有可佈置的⛈️", view=CellMenuView(self.uid, self.idx, self.version), embed=None)
+                cell.machine = "typhoon"; s.machines["typhoon"] -= 1
+            elif tool == "billboard":
+                if s.machines.get("billboard", 0) <= 0:
+                    return await interaction.response.edit_message(content=f"{render_status(s)}\n沒有可佈置的🪧", view=CellMenuView(self.uid, self.idx, self.version), embed=None)
+                cell.machine = "billboard"; s.machines["billboard"] -= 1
+            elif tool == "lobster":
+                if s.materials.get("lobster", 0) <= 0:
+                    return await interaction.response.edit_message(content=f"{render_status(s)}\n沒有可佈置的🦞", view=CellMenuView(self.uid, self.idx, self.version), embed=None)
+                cell.machine = "lobster"; s.materials["lobster"] -= 1
+            save_player(self.uid)
+            return await interaction.response.edit_message(content=f"{render_status(s)}\n已佈置 {crop_emoji(cell)} 於地塊#{self.idx+1}", view=FarmMainView(self.uid, self.version), embed=None)
+        if action == "cfg_lobster":
+            return await interaction.response.edit_message(content=f"設定龍蝦地塊#{self.idx+1}單一種籽", view=LobsterConfigView(self.uid, self.idx))
         if action == "upgrade":
             if not consume_stamina(s, 10):
                 await interaction.response.send_message("體力不足", ephemeral=True)
@@ -685,10 +711,6 @@ class FarmUIView(discord.ui.View):
     @discord.ui.button(label="🧪 合成區", style=discord.ButtonStyle.secondary)
     async def craft(self, interaction: discord.Interaction, _):
         await interaction.response.edit_message(content="合成區", view=CraftView(self.uid))
-
-    @discord.ui.button(label="🛠️ 農機具", style=discord.ButtonStyle.secondary)
-    async def tools(self, interaction: discord.Interaction, _):
-        await interaction.response.edit_message(content="農機具配置", view=ToolsView(self.uid))
 
     @discord.ui.button(label="👥 好友", style=discord.ButtonStyle.primary)
     async def friends(self, interaction: discord.Interaction, _):
