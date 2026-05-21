@@ -75,7 +75,7 @@ def get_state(uid: int) -> PlayerState:
         s.friends = []
         s.visit_cooldowns = {}
         s.crop_mastery = {}
-        s.materials = {"scroll":0,"poop":0,"moai":0,"meteor":0,"typhoon_eye":0,"umbrella":0,"lobster":0,"deadwood":0,"roach":0,"cig_butt":0}
+        s.materials = {"scroll":0,"poop":0,"bag_expand":0,"moai":0,"meteor":0,"typhoon_eye":0,"umbrella":0,"lobster":0,"deadwood":0,"roach":0,"cig_butt":0}
         s.machines = {}
         s.hormone = 0
         s.lobster_cfg = {}
@@ -86,9 +86,9 @@ def get_state(uid: int) -> PlayerState:
 
 def ensure_state_defaults(s: PlayerState) -> None:
     if not hasattr(s, "materials") or s.materials is None:
-        s.materials = {"scroll": 0, "poop": 0, "moai": 0, "meteor": 0, "typhoon_eye": 0, "umbrella": 0, "lobster": 0, "deadwood": 0, "roach": 0, "cig_butt": 0}
+        s.materials = {"scroll": 0, "poop": 0, "bag_expand": 0, "moai": 0, "meteor": 0, "typhoon_eye": 0, "umbrella": 0, "lobster": 0, "deadwood": 0, "roach": 0, "cig_butt": 0}
     else:
-        for k in ("scroll", "poop", "moai", "meteor", "typhoon_eye", "umbrella", "lobster", "deadwood", "roach", "cig_butt"):
+        for k in ("scroll", "poop", "bag_expand", "moai", "meteor", "typhoon_eye", "umbrella", "lobster", "deadwood", "roach", "cig_butt"):
             s.materials.setdefault(k, 0)
     if not hasattr(s, "machines") or s.machines is None:
         s.machines = {}
@@ -261,7 +261,7 @@ class CellActionSelect(discord.ui.Select):
                 options.append(discord.SelectOption(label=f"種植{name}{crop['emoji']}(養分{easier(crop['required_nutrients'])})", value=f"plant:{name}"))
             up_gold = easier(40)
             up_poop = easier(cell.level * 5)
-            if s.stamina >= 10 and s.gold >= up_gold and s.poop >= up_poop:
+            if s.stamina >= 10 and s.gold >= up_gold and s.materials.get("poop", 0) >= up_poop:
                 options.append(discord.SelectOption(label=f"升級({up_gold}金+💩{up_poop})", value="upgrade"))
             if s.stamina >= 10 and s.materials.get("poop",0) >= 1:
                 options.append(discord.SelectOption(label="施肥(+20養分，💩x1)", value="fertilize"))
@@ -314,13 +314,13 @@ class CellActionSelect(discord.ui.Select):
                 await interaction.response.send_message("體力不足", ephemeral=True)
                 return
             s.gold -= easier(40)
-            s.poop -= easier(cell.level * 5)
+            s.materials["poop"] = max(0, s.materials.get("poop", 0) - easier(cell.level * 5))
             cell.level += 1
             save_player(self.uid)
             await interaction.response.edit_message(content=f"{render_status(s)}\n地塊升級 Lv.{cell.level}", view=CellMenuView(self.uid, self.idx, self.version), embed=None)
             return
         if action == "fertilize":
-            if s.poop < 1 or not consume_stamina(s, 10):
+            if s.materials.get("poop", 0) < 1 or not consume_stamina(s, 10):
                 await interaction.response.edit_message(
                     content=f"{render_status(s)}\n{cell_status_text(cell, self.idx)}\n施肥失敗：需要體力10與💩x1",
                     view=CellMenuView(self.uid, self.idx, self.version),
@@ -483,12 +483,12 @@ class BarnSlotSelect(discord.ui.Select):
         options: list[discord.SelectOption] = []
         if not slot.unlocked:
             unlock_gold = easier(40)
-            if s.gold >= unlock_gold and s.bag_expand >= 1:
+            if s.gold >= unlock_gold and s.materials.get("bag_expand", 0) >= 1:
                 options.append(discord.SelectOption(label=f"解鎖欄位({unlock_gold}金+👜x1)", value="unlock"))
         else:
             up_gold = easier(40)
             up_bag = easier(slot.level * 5)
-            if slot.level < 4 and s.gold >= up_gold and s.bag_expand >= up_bag and s.stamina >= 10:
+            if slot.level < 4 and s.gold >= up_gold and s.materials.get("bag_expand", 0) >= up_bag and s.stamina >= 10:
                 options.append(discord.SelectOption(label=f"升級欄位({up_gold}金+👜x{up_bag})", value="upgrade"))
             if slot.crop_name and slot.amount > 0:
                 crop = CROP_MAP[slot.crop_name]
@@ -507,7 +507,7 @@ class BarnSlotSelect(discord.ui.Select):
             return
         if action == "unlock":
             s.gold -= easier(40)
-            s.bag_expand -= 1
+            s.materials["bag_expand"] = max(0, s.materials.get("bag_expand", 0) - 1)
             slot.unlocked = True
             save_player(self.uid)
             await interaction.response.edit_message(content=f"{render_status(s)}\n穀倉欄位已解鎖", view=BarnMainView(self.uid), embed=None)
@@ -518,7 +518,7 @@ class BarnSlotSelect(discord.ui.Select):
                 await interaction.response.send_message("體力不足", ephemeral=True)
                 return
             s.gold -= easier(40)
-            s.bag_expand -= cost
+            s.materials["bag_expand"] = max(0, s.materials.get("bag_expand", 0) - cost)
             slot.level += 1
             save_player(self.uid)
             await interaction.response.edit_message(content=f"{render_status(s)}\n欄位升級至 Lv.{slot.level}", view=BarnSlotMenuView(self.uid, self.idx), embed=None)
