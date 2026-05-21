@@ -159,6 +159,8 @@ def crop_emoji(cell) -> str:
         return "🦞"
     if cell.crop is None:
         return "🟫"
+    if cell.crop.crop_name == "__WITHERED__":
+        return "🪾"
     crop = CROP_MAP[cell.crop.crop_name]
     return crop["emoji"]
 
@@ -166,6 +168,14 @@ def crop_emoji(cell) -> str:
 def render_status(s: PlayerState) -> str:
     seed_text = "、".join(f"{CROP_MAP[n]['emoji']}{n}x{q}" for n, q in s.seeds.items() if q > 0) or "無"
     return f"💰{s.gold} ⚡{s.stamina}/{s.stamina_max} 🍖{s.fullness}/100 | 種籽：{seed_text} | 素材🧾{s.materials.get("scroll",0)} 💩{s.materials.get("poop",0)}"
+
+
+def bag_detail_text(s: PlayerState) -> str:
+    mats = [(k, v) for k, v in s.materials.items() if v > 0]
+    mats_text = "、".join([f"{k}:{v}" for k, v in mats]) if mats else "（目前無素材）"
+    seeds = [(k, v) for k, v in s.seeds.items() if v > 0]
+    seeds_text = "、".join([f"{CROP_MAP[k]['emoji']}{k}x{v}" for k, v in seeds]) if seeds else "（目前無種籽）"
+    return f"🎒背包詳情\n素材：{mats_text}\n種籽：{seeds_text}\n農機具：⛈️{s.machines.get('typhoon',0)} 🪧{s.machines.get('billboard',0)} 🦞{s.materials.get('lobster',0)}\n💉生長激素：{getattr(s,'hormone',0)}"
 
 
 def cell_status_text(cell, idx: int) -> str:
@@ -273,6 +283,11 @@ class CellActionSelect(discord.ui.Select):
                 options.append(discord.SelectOption(label="佈置 🦞龍蝦", value="place:lobster"))
             options.append(discord.SelectOption(label="返回農地←", value="back"))
         else:
+            if cell.crop and cell.crop.crop_name == "__WITHERED__":
+                options.append(discord.SelectOption(label="清理枯萎作物（3日後可回收）", value="clear_wither"))
+                options.append(discord.SelectOption(label="返回農地←", value="back"))
+                super().__init__(placeholder=f"地塊 #{idx+1} 選單", options=options, min_values=1, max_values=1)
+                return
             options.append(discord.SelectOption(label="澆水(+10%生長速度1日)", value="water"))
             options.append(discord.SelectOption(label="直接吃掉(10%飽食恢復)", value="eat_crop"))
             if s.stamina >= 10 and s.materials.get("poop",0) >= 1:
@@ -299,6 +314,8 @@ class CellActionSelect(discord.ui.Select):
         if action == "back":
             await interaction.response.edit_message(content=render_status(s), view=FarmMainView(self.uid, self.version), embed=None)
             return
+        if action == "clear_wither":
+            action = "harvest"
         if action == "unlock":
             s.materials["scroll"] = max(0,s.materials.get("scroll",0)-1)
             cell.unlocked = True
@@ -392,6 +409,9 @@ class CellActionSelect(discord.ui.Select):
             await interaction.response.edit_message(content=f"{render_status(s)}\n已拆除農機具", view=FarmMainView(self.uid, self.version), embed=None)
             return
         if action == "eat_crop":
+            if cell.crop.crop_name == "__WITHERED__":
+                await interaction.response.edit_message(content=f"{render_status(s)}\n枯萎作物不可食用", view=CellMenuView(self.uid, self.idx, self.version), embed=None)
+                return
             crop = CROP_MAP[cell.crop.crop_name]
             s.fullness = min(100, s.fullness + max(1, int(crop["level"] * 2 * 0.1)))
             cell.crop = None
@@ -399,6 +419,19 @@ class CellActionSelect(discord.ui.Select):
             await interaction.response.edit_message(content=f"{render_status(s)}\n已直接吃掉作物", view=FarmMainView(self.uid, self.version), embed=None)
             return
         if action == "harvest":
+            if cell.crop and cell.crop.crop_name == "__WITHERED__":
+                if not mature(cell.crop):
+                    await interaction.response.edit_message(content=f"{render_status(s)}\n枯萎中，尚需等待3日處理", view=CellMenuView(self.uid, self.idx, self.version), embed=None)
+                    return
+                cell.crop = None
+                s.materials["poop"] = s.materials.get("poop", 0) + 1
+                if random.random() < 0.5:
+                    s.materials["deadwood"] = s.materials.get("deadwood", 0) + 1
+                if random.random() < 0.5:
+                    s.materials["roach"] = s.materials.get("roach", 0) + 1
+                save_player(self.uid)
+                await interaction.response.edit_message(content=f"{render_status(s)}\n已清理枯萎作物，獲得💩並可能掉落🪾/🪳", view=FarmMainView(self.uid, self.version), embed=None)
+                return
             if not cell.crop or not mature(cell.crop) or not consume_stamina(s, 10):
                 await interaction.response.edit_message(content=f"{render_status(s)}\n目前無法收割", view=CellMenuView(self.uid, self.idx, self.version), embed=None)
                 return
@@ -408,10 +441,10 @@ class CellActionSelect(discord.ui.Select):
             harvest_qty = 1 + prof_level
             req_nutrients = easier(crop["required_nutrients"])
             if cell.nutrients < req_nutrients:
-                cell.crop = None
-                s.materials["poop"] = s.materials.get("poop",0)+1
+                now = datetime.now(timezone.utc)
+                cell.crop = CropInstance("__WITHERED__", now, now + timedelta(seconds=3 * DAY_SECONDS))
                 save_player(self.uid)
-                await interaction.response.edit_message(content=f"{render_status(s)}\n養分不足枯萎，獲得💩x1", view=FarmMainView(self.uid, self.version), embed=None)
+                await interaction.response.edit_message(content=f"{render_status(s)}\n養分不足，作物進入🪾枯萎狀態（3日後可清理回收）", view=FarmMainView(self.uid, self.version), embed=None)
                 return
             cell.nutrients -= req_nutrients
             # 收成先進穀倉；若無法存放才直接換金
@@ -702,7 +735,7 @@ class FarmUIView(discord.ui.View):
     @discord.ui.button(label="🎒 背包", style=discord.ButtonStyle.secondary)
     async def bag(self, interaction: discord.Interaction, _):
         s = get_state(self.uid)
-        await interaction.response.edit_message(content=render_status(s), view=FarmUIView(self.uid))
+        await interaction.response.edit_message(content=bag_detail_text(s), view=FarmUIView(self.uid))
 
     @discord.ui.button(label="🌾 穀倉", style=discord.ButtonStyle.success)
     async def barn(self, interaction: discord.Interaction, _):
