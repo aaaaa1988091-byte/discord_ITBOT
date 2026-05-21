@@ -80,7 +80,24 @@ def get_state(uid: int) -> PlayerState:
         s.hormone = 0
         s.lobster_cfg = {}
         GAME[uid] = s
+    ensure_state_defaults(GAME[uid])
     return GAME[uid]
+
+
+def ensure_state_defaults(s: PlayerState) -> None:
+    if not hasattr(s, "materials") or s.materials is None:
+        s.materials = {"scroll": 0, "poop": 0, "moai": 0, "meteor": 0, "typhoon_eye": 0, "umbrella": 0, "lobster": 0, "deadwood": 0, "roach": 0, "cig_butt": 0}
+    else:
+        for k in ("scroll", "poop", "moai", "meteor", "typhoon_eye", "umbrella", "lobster", "deadwood", "roach", "cig_butt"):
+            s.materials.setdefault(k, 0)
+    if not hasattr(s, "machines") or s.machines is None:
+        s.machines = {}
+    if not hasattr(s, "hormone"):
+        s.hormone = 0
+    if not hasattr(s, "lobster_cfg") or s.lobster_cfg is None:
+        s.lobster_cfg = {}
+    if not hasattr(s, "crop_mastery") or s.crop_mastery is None:
+        s.crop_mastery = {}
 
 
 def next_ui_version(uid: int) -> int:
@@ -127,6 +144,7 @@ def load_player(uid: int) -> None:
     s.init_default_layout()
     for k, v in d.items():
         setattr(s, k, v)
+    ensure_state_defaults(s)
     GAME[uid] = s
 
 
