@@ -26,3 +26,5 @@ DISCORD_TOKEN=xxx python bot.py
 ```bash
 python -m unittest test_game_logic.py
 ```
+
+- 龍蝦可在農機具頁設定「單一種籽」自動種植目標

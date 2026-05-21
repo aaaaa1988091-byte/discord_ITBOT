@@ -907,6 +907,9 @@ class ToolsSelect(discord.ui.Select):
             if getattr(c,"machine",None) in ("typhoon","billboard","lobster"):
                 continue
             opts.append(discord.SelectOption(label=f"佈置到地塊#{i+1}", value=f"cell:{i}"))
+        for i,c in enumerate(s.farm):
+            if getattr(c,"machine",None)=="lobster":
+                opts.append(discord.SelectOption(label=f"設定🦞地塊#{i+1}單一種籽", value=f"cfg:{i}"))
         if s.machines.get("typhoon",0)>0: opts.append(discord.SelectOption(label="選擇佈置 ⛈️颱風眼催發器", value="pick:typhoon"))
         if s.machines.get("billboard",0)>0: opts.append(discord.SelectOption(label="選擇佈置 🪧電影廣告招牌", value="pick:billboard"))
         if s.materials.get("lobster",0)>0: opts.append(discord.SelectOption(label="選擇佈置 🦞龍蝦", value="pick:lobster"))
@@ -929,6 +932,45 @@ class ToolsSelect(discord.ui.Select):
             s.tool_pick=None
             save_player(self.uid)
             return await interaction.response.edit_message(content=f"已佈置 {pick} 到地塊#{idx+1}", view=FarmUIView(self.uid))
+        if v.startswith("cfg:"):
+            idx=int(v.split(":")[1])
+            return await interaction.response.edit_message(content=f"設定龍蝦地塊#{idx+1}自動種植種籽", view=LobsterConfigView(self.uid, idx))
+
+
+class LobsterSeedSelect(discord.ui.Select):
+    def __init__(self, uid:int, idx:int):
+        self.uid=uid; self.idx=idx
+        s=get_state(uid)
+        opts=[]
+        for name,qty in sorted(s.seeds.items(), key=lambda kv:(CROP_MAP[kv[0]]["level"],kv[0])):
+            if qty>0:
+                crop=CROP_MAP[name]
+                opts.append(discord.SelectOption(label=f"{crop['emoji']}{name} x{qty}", value=name))
+        if not opts:
+            opts=[discord.SelectOption(label="目前無可設定種籽", value="none")]
+        opts.append(discord.SelectOption(label="清除設定", value="clear"))
+        opts.append(discord.SelectOption(label="返回←", value="back"))
+        super().__init__(placeholder=f"龍蝦地塊#{idx+1}單一種籽", options=opts[:25], min_values=1, max_values=1)
+    async def callback(self, interaction:discord.Interaction):
+        s=get_state(self.uid); v=self.values[0]
+        if v=="back":
+            return await interaction.response.edit_message(content="農機具配置", view=ToolsView(self.uid))
+        if v=="none":
+            return await interaction.response.edit_message(content="目前無可設定種籽", view=LobsterConfigView(self.uid,self.idx))
+        if v=="clear":
+            s.lobster_cfg.pop(str(self.idx), None)
+            save_player(self.uid)
+            return await interaction.response.edit_message(content=f"已清除地塊#{self.idx+1}龍蝦種籽設定", view=LobsterConfigView(self.uid,self.idx))
+        s.lobster_cfg[str(self.idx)] = v
+        save_player(self.uid)
+        crop=CROP_MAP[v]
+        return await interaction.response.edit_message(content=f"地塊#{self.idx+1}龍蝦已設定：{crop['emoji']}{v}", view=LobsterConfigView(self.uid,self.idx))
+
+
+class LobsterConfigView(discord.ui.View):
+    def __init__(self, uid:int, idx:int):
+        super().__init__(timeout=120)
+        self.add_item(LobsterSeedSelect(uid, idx))
 
 if __name__ == "__main__":
     import os
