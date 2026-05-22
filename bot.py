@@ -13,7 +13,7 @@ from game_logic import CropInstance, PlayerState, consume_stamina, mature
 DAY_SECONDS = 60
 WATER_COOLDOWN_DAYS = 3
 WATER_SPEEDUP_DAYS = 1
-DIFFICULTY_FACTOR = 0.8  # 降低難度 20%
+DIFFICULTY_FACTOR = 0.6  # 降低難度 20%
 
 
 def easier(v: int, min_value: int = 1) -> int:
@@ -54,7 +54,36 @@ CROPS = [
 CROP_MAP = {c["name"]: c for c in CROPS}
 LEVEL_WEIGHT = {1: 10, 2: 12, 3: 18, 4: 22, 5: 20, 6: 18}  # 高等級大幅提高抽取權重
 LEVEL_TAG = {1: "普通", 2: "良好", 3: "稀有", 4: "史詩", 5: "傳說", 6: "神話"}
-MATERIAL_BASE = {"scroll":0.005,"poop":0.10,"moai":0.05,"meteor":0.03,"typhoon_eye":0.03,"umbrella":0.08,"lobster":0.02,"deadwood":0.10,"roach":0.10,"cig_butt":0.38}
+
+# 素材基礎掉落率修正
+MATERIAL_BASE = {
+    "scroll": 0.20,
+    "poop": 0.40,
+    "moai": 0.05,
+    "meteor": 0.03,
+    "typhoon_eye": 0.03,
+    "umbrella": 0.08,
+    "lobster": 0.02,
+    "deadwood": 0.10,
+    "roach": 0.10,
+    "cig_butt": 0.38
+}
+
+# 素材中文與 Emoji 對應表
+MATERIAL_MAP = {
+    "scroll": {"emoji": "🧾", "name": "破石法符"},
+    "poop": {"emoji": "💩", "name": "大便"},
+    "moai": {"emoji": "🗿", "name": "古老的摩艾石像"},
+    "meteor": {"emoji": "☄️", "name": "隕石碎片"},
+    "typhoon_eye": {"emoji": "🌀", "name": "幼年的颱風眼"},
+    "umbrella": {"emoji": "☔", "name": "偷菜賊忘記帶走的雨傘"},
+    "lobster": {"emoji": "🦞", "name": "上岸覓食的龍蝦"},
+    "deadwood": {"emoji": "🪾", "name": "枯木"},
+    "roach": {"emoji": "🪳", "name": "蟑螂"},
+    "cig_butt": {"emoji": "🚬", "name": "勞改犯亂丟的菸蒂"},
+    "bag_expand": {"emoji": "👜", "name": "擴充道具"}
+}
+
 GAME: dict[int, PlayerState] = {}
 DATA_DIR = "player_data"
 UI_VERSION: dict[int, int] = {}
@@ -79,6 +108,10 @@ def get_state(uid: int) -> PlayerState:
         s.machines = {}
         s.hormone = 0
         s.lobster_cfg = {}
+        s.ticks = 0
+        s.same_crop_sale_streak = [None, 0]
+        s.scarcity_bonus_left = {}
+        s.last_sold_tick = {}
         GAME[uid] = s
     ensure_state_defaults(GAME[uid])
     return GAME[uid]
@@ -98,6 +131,14 @@ def ensure_state_defaults(s: PlayerState) -> None:
         s.lobster_cfg = {}
     if not hasattr(s, "crop_mastery") or s.crop_mastery is None:
         s.crop_mastery = {}
+    if not hasattr(s, "ticks"):
+        s.ticks = 0
+    if not hasattr(s, "same_crop_sale_streak"):
+        s.same_crop_sale_streak = [None, 0]
+    if not hasattr(s, "scarcity_bonus_left"):
+        s.scarcity_bonus_left = {}
+    if not hasattr(s, "last_sold_tick"):
+        s.last_sold_tick = {}
 
 
 def next_ui_version(uid: int) -> int:
@@ -109,12 +150,96 @@ def is_ui_active(uid: int, version: int) -> bool:
     return UI_VERSION.get(uid, 0) == version
 
 
+def farm_to_dict(farm) -> list:
+    out = []
+    for cell in farm:
+        c_dict = {
+            "unlocked": cell.unlocked,
+            "level": cell.level,
+            "nutrients": cell.nutrients,
+            "machine": getattr(cell, "machine", None),
+            "wet_until": cell.wet_until.isoformat() if getattr(cell, "wet_until", None) else None,
+            "water_cooldown_until": cell.water_cooldown_until.isoformat() if getattr(cell, "water_cooldown_until", None) else None,
+            "visited_boosted": getattr(cell, "visited_boosted", False),
+            "hormone_boosted": getattr(cell, "hormone_boosted", False),
+            "crop": None
+        }
+        if getattr(cell, "crop", None):
+            pt = getattr(cell.crop, "plant_time", None)
+            gu = getattr(cell.crop, "grow_until", None)
+            c_dict["crop"] = {
+                "crop_name": getattr(cell.crop, "crop_name", None),
+                "plant_time": pt.isoformat() if pt else None,
+                "grow_until": gu.isoformat() if gu else None
+            }
+        out.append(c_dict)
+    return out
+
+
+def barn_to_dict(barn) -> list:
+    out = []
+    for slot in barn:
+        out.append({
+            "unlocked": slot.unlocked,
+            "level": slot.level,
+            "crop_name": slot.crop_name,
+            "amount": slot.amount
+        })
+    return out
+
+
+def dict_to_farm(farm_list, farm_obj) -> None:
+    for i, d in enumerate(farm_list):
+        if i >= len(farm_obj):
+            break
+        cell = farm_obj[i]
+        cell.unlocked = d.get("unlocked", cell.unlocked)
+        cell.level = d.get("level", cell.level)
+        cell.nutrients = d.get("nutrients", cell.nutrients)
+        cell.machine = d.get("machine", None)
+        
+        wet = d.get("wet_until")
+        cell.wet_until = datetime.fromisoformat(wet) if wet else None
+        
+        wcooldown = d.get("water_cooldown_until")
+        cell.water_cooldown_until = datetime.fromisoformat(wcooldown) if wcooldown else None
+        
+        cell.visited_boosted = d.get("visited_boosted", False)
+        cell.hormone_boosted = d.get("hormone_boosted", False)
+        
+        crop_d = d.get("crop")
+        if crop_d:
+            p_time = datetime.fromisoformat(crop_d["plant_time"]) if crop_d.get("plant_time") else datetime.now(timezone.utc)
+            g_until = datetime.fromisoformat(crop_d["grow_until"]) if crop_d.get("grow_until") else datetime.now(timezone.utc)
+            cell.crop = CropInstance(crop_d["crop_name"], p_time, g_until)
+        else:
+            cell.crop = None
+
+
+def dict_to_barn(barn_list, barn_obj) -> None:
+    for i, d in enumerate(barn_list):
+        if i >= len(barn_obj):
+            break
+        slot = barn_obj[i]
+        slot.unlocked = d.get("unlocked", slot.unlocked)
+        slot.level = d.get("level", slot.level)
+        slot.crop_name = d.get("crop_name", None)
+        slot.amount = d.get("amount", 0)
+
+
 def state_to_dict(s: PlayerState) -> dict:
     return {
         "gold": s.gold, "stamina": s.stamina, "stamina_max": s.stamina_max, "fullness": s.fullness,
         "moon_shard": s.moon_shard, "scroll": s.scroll, "poop": s.poop, "bag_expand": s.bag_expand,
         "proficiency_level": s.proficiency_level, "proficiency_exp": s.proficiency_exp, "seeds": s.seeds,
-        "friends": s.friends, "visit_cooldowns": s.visit_cooldowns, "player_name": s.player_name, "crop_mastery": s.crop_mastery, "materials": getattr(s,"materials",{}), "machines": getattr(s,"machines",{}), "hormone": getattr(s,"hormone",0), "lobster_cfg": getattr(s,"lobster_cfg",{}),
+        "friends": s.friends, "visit_cooldowns": s.visit_cooldowns, "player_name": s.player_name, "crop_mastery": s.crop_mastery,
+        "materials": getattr(s, "materials", {}), "machines": getattr(s, "machines", {}), "hormone": getattr(s, "hormone", 0), "lobster_cfg": getattr(s, "lobster_cfg", {}),
+        "ticks": getattr(s, "ticks", 0),
+        "same_crop_sale_streak": getattr(s, "same_crop_sale_streak", [None, 0]),
+        "scarcity_bonus_left": getattr(s, "scarcity_bonus_left", {}),
+        "last_sold_tick": getattr(s, "last_sold_tick", {}),
+        "farm": farm_to_dict(s.farm),
+        "barn": barn_to_dict(s.barn)
     }
 
 
@@ -142,8 +267,18 @@ def load_player(uid: int) -> None:
         d = json.load(f)
     s = PlayerState()
     s.init_default_layout()
+    
+    farm_list = d.pop("farm", None)
+    barn_list = d.pop("barn", None)
+    
     for k, v in d.items():
         setattr(s, k, v)
+        
+    if farm_list:
+        dict_to_farm(farm_list, s.farm)
+    if barn_list:
+        dict_to_barn(barn_list, s.barn)
+        
     ensure_state_defaults(s)
     GAME[uid] = s
 
@@ -167,12 +302,12 @@ def crop_emoji(cell) -> str:
 
 def render_status(s: PlayerState) -> str:
     seed_text = "、".join(f"{CROP_MAP[n]['emoji']}{n}x{q}" for n, q in s.seeds.items() if q > 0) or "無"
-    return f"💰{s.gold} ⚡{s.stamina}/{s.stamina_max} 🍖{s.fullness}/100 | 種籽：{seed_text} | 素材🧾{s.materials.get("scroll",0)} 💩{s.materials.get("poop",0)}"
+    return f"💰{s.gold} ⚡{s.stamina}/{s.stamina_max} 🍖{s.fullness}/100 | 種籽：{seed_text} | 素材：🧾破石法符x{s.materials.get('scroll',0)} 💩大便x{s.materials.get('poop',0)}"
 
 
 def bag_detail_text(s: PlayerState) -> str:
     mats = [(k, v) for k, v in s.materials.items() if v > 0]
-    mats_text = "、".join([f"{k}:{v}" for k, v in mats]) if mats else "（目前無素材）"
+    mats_text = "、".join([f"{MATERIAL_MAP.get(k, {'emoji': '', 'name': k})['emoji']}{MATERIAL_MAP.get(k, {'emoji': '', 'name': k})['name']}x{v}" for k, v in mats]) if mats else "（目前無素材）"
     seeds = [(k, v) for k, v in s.seeds.items() if v > 0]
     seeds_text = "、".join([f"{CROP_MAP[k]['emoji']}{k}x{v}" for k, v in seeds]) if seeds else "（目前無種籽）"
     return f"🎒背包詳情\n素材：{mats_text}\n種籽：{seeds_text}\n農機具：⛈️{s.machines.get('typhoon',0)} 🪧{s.machines.get('billboard',0)} 🦞{s.materials.get('lobster',0)}\n💉生長激素：{getattr(s,'hormone',0)}"
@@ -189,7 +324,6 @@ def market_unit_price(state: PlayerState, crop_name: str, level: int) -> tuple[i
         pct -= 10
     if state.scarcity_bonus_left.get(crop_name, 0) > 0:
         pct += 10
-    # 高等級作物售價大幅提升（體現抽種籽運氣價值）
     base = int(level * 10 * (1 + level * 0.8))
     return int(base * (100 + pct) / 100), pct
 
@@ -200,7 +334,6 @@ def furnace_draw_crop() -> dict:
 
 
 def furnace_seed_amount(crop_level: int) -> int:
-    # 高等級更有機率一次掉 2 顆，強化「抽卡運氣感」
     if crop_level >= 5 and random.random() < 0.35:
         return 2
     if crop_level >= 3 and random.random() < 0.15:
@@ -251,6 +384,7 @@ class FarmMainView(discord.ui.View):
             btn.callback = cb
             self.add_item(btn)
 
+
 class CellActionSelect(discord.ui.Select):
     def __init__(self, uid: int, idx: int, version: int):
         self.uid, self.idx = uid, idx
@@ -260,8 +394,8 @@ class CellActionSelect(discord.ui.Select):
         options: list[discord.SelectOption] = []
 
         if not cell.unlocked:
-            if s.materials.get("scroll",0) >= 1:
-                options.append(discord.SelectOption(label="解鎖(🧾x1)", value="unlock"))
+            if s.materials.get("scroll", 0) >= 1:
+                options.append(discord.SelectOption(label=f"解鎖({MATERIAL_MAP['scroll']['emoji']}{MATERIAL_MAP['scroll']['name']}x1)", value="unlock"))
             options.append(discord.SelectOption(label="返回農地←", value="back"))
         elif cell.crop is None and getattr(cell, "machine", None) not in ("typhoon", "billboard"):
             for name, qty in sorted(s.seeds.items(), key=lambda kv: (CROP_MAP[kv[0]]["level"], kv[0])):
@@ -272,15 +406,15 @@ class CellActionSelect(discord.ui.Select):
             up_gold = easier(40)
             up_poop = easier(cell.level * 5)
             if s.stamina >= 10 and s.gold >= up_gold and s.materials.get("poop", 0) >= up_poop:
-                options.append(discord.SelectOption(label=f"升級({up_gold}金+💩{up_poop})", value="upgrade"))
-            if s.stamina >= 10 and s.materials.get("poop",0) >= 1:
-                options.append(discord.SelectOption(label="施肥(+20養分，💩x1)", value="fertilize"))
+                options.append(discord.SelectOption(label=f"升級({up_gold}金+{MATERIAL_MAP['poop']['emoji']}{MATERIAL_MAP['poop']['name']}x{up_poop})", value="upgrade"))
+            if s.stamina >= 10 and s.materials.get("poop", 0) >= 1:
+                options.append(discord.SelectOption(label=f"施肥(+20養分，{MATERIAL_MAP['poop']['emoji']}{MATERIAL_MAP['poop']['name']}x1)", value="fertilize"))
             if s.machines.get("typhoon", 0) > 0:
                 options.append(discord.SelectOption(label="佈置 ⛈️颱風眼催發器", value="place:typhoon"))
             if s.machines.get("billboard", 0) > 0:
                 options.append(discord.SelectOption(label="佈置 🪧電影廣告招牌", value="place:billboard"))
             if s.materials.get("lobster", 0) > 0:
-                options.append(discord.SelectOption(label="佈置 🦞龍蝦", value="place:lobster"))
+                options.append(discord.SelectOption(label=f"佈置 {MATERIAL_MAP['lobster']['emoji']}{MATERIAL_MAP['lobster']['name']}", value="place:lobster"))
             options.append(discord.SelectOption(label="返回農地←", value="back"))
         else:
             if cell.crop and cell.crop.crop_name == "__WITHERED__":
@@ -289,9 +423,11 @@ class CellActionSelect(discord.ui.Select):
                 super().__init__(placeholder=f"地塊 #{idx+1} 選單", options=options, min_values=1, max_values=1)
                 return
             options.append(discord.SelectOption(label="澆水(+10%生長速度1日)", value="water"))
+            if s.hormone >= 1 and not getattr(cell, "hormone_boosted", False):
+                options.append(discord.SelectOption(label="使用生長激素(💉生長+30%)", value="use_hormone"))
             options.append(discord.SelectOption(label="直接吃掉(10%飽食恢復)", value="eat_crop"))
-            if s.stamina >= 10 and s.materials.get("poop",0) >= 1:
-                options.append(discord.SelectOption(label="施肥(+20養分，💩x1)", value="fertilize"))
+            if s.stamina >= 10 and s.materials.get("poop", 0) >= 1:
+                options.append(discord.SelectOption(label=f"施肥(+20養分，{MATERIAL_MAP['poop']['emoji']}{MATERIAL_MAP['poop']['name']}x1)", value="fertilize"))
             if mature(cell.crop) and s.stamina >= 10:
                 options.append(discord.SelectOption(label="收割", value="harvest"))
             options.append(discord.SelectOption(label="更多資訊", value="info"))
@@ -317,7 +453,7 @@ class CellActionSelect(discord.ui.Select):
         if action == "clear_wither":
             action = "harvest"
         if action == "unlock":
-            s.materials["scroll"] = max(0,s.materials.get("scroll",0)-1)
+            s.materials["scroll"] = max(0, s.materials.get("scroll", 0) - 1)
             cell.unlocked = True
             save_player(self.uid)
             await interaction.response.edit_message(content=f"{render_status(s)}\n地塊已解鎖", view=FarmMainView(self.uid, self.version), embed=None)
@@ -331,6 +467,8 @@ class CellActionSelect(discord.ui.Select):
             now = datetime.now(timezone.utc)
             cell.crop = CropInstance(crop_name, now, now + timedelta(seconds=easier(crop["grow_days"]) * DAY_SECONDS))
             s.seeds[crop_name] -= 1
+            cell.visited_boosted = False
+            cell.hormone_boosted = False
             save_player(self.uid)
             await interaction.response.edit_message(content=f"{render_status(s)}\n已種植 {crop['emoji']}{crop_name}", view=FarmMainView(self.uid, self.version), embed=None)
             return
@@ -339,15 +477,18 @@ class CellActionSelect(discord.ui.Select):
             if tool == "typhoon":
                 if s.machines.get("typhoon", 0) <= 0:
                     return await interaction.response.edit_message(content=f"{render_status(s)}\n沒有可佈置的⛈️", view=CellMenuView(self.uid, self.idx, self.version), embed=None)
-                cell.machine = "typhoon"; s.machines["typhoon"] -= 1
+                cell.machine = "typhoon"
+                s.machines["typhoon"] -= 1
             elif tool == "billboard":
                 if s.machines.get("billboard", 0) <= 0:
                     return await interaction.response.edit_message(content=f"{render_status(s)}\n沒有可佈置的🪧", view=CellMenuView(self.uid, self.idx, self.version), embed=None)
-                cell.machine = "billboard"; s.machines["billboard"] -= 1
+                cell.machine = "billboard"
+                s.machines["billboard"] -= 1
             elif tool == "lobster":
                 if s.materials.get("lobster", 0) <= 0:
                     return await interaction.response.edit_message(content=f"{render_status(s)}\n沒有可佈置的🦞", view=CellMenuView(self.uid, self.idx, self.version), embed=None)
-                cell.machine = "lobster"; s.materials["lobster"] -= 1
+                cell.machine = "lobster"
+                s.materials["lobster"] -= 1
             save_player(self.uid)
             return await interaction.response.edit_message(content=f"{render_status(s)}\n已佈置 {crop_emoji(cell)} 於地塊#{self.idx+1}", view=FarmMainView(self.uid, self.version), embed=None)
         if action == "cfg_lobster":
@@ -365,12 +506,12 @@ class CellActionSelect(discord.ui.Select):
         if action == "fertilize":
             if s.materials.get("poop", 0) < 1 or not consume_stamina(s, 10):
                 await interaction.response.edit_message(
-                    content=f"{render_status(s)}\n{cell_status_text(cell, self.idx)}\n施肥失敗：需要體力10與💩x1",
+                    content=f"{render_status(s)}\n{cell_status_text(cell, self.idx)}\n施肥失敗：需要體力10與{MATERIAL_MAP['poop']['emoji']}{MATERIAL_MAP['poop']['name']}x1",
                     view=CellMenuView(self.uid, self.idx, self.version),
                     embed=None,
                 )
                 return
-            s.materials["poop"] = max(0,s.materials.get("poop",0)-1)
+            s.materials["poop"] = max(0, s.materials.get("poop", 0) - 1)
             before = cell.nutrients
             cell.nutrients = min(cell.level * 30, cell.nutrients + 20)
             gain = cell.nutrients - before
@@ -389,12 +530,31 @@ class CellActionSelect(discord.ui.Select):
                 await interaction.response.edit_message(content=f"澆水冷卻中，剩餘 {left} 日", view=CellMenuView(self.uid, self.idx, self.version), embed=None)
                 return
             speed = timedelta(seconds=WATER_SPEEDUP_DAYS * DAY_SECONDS)
-            if cell.crop and cell.crop.grow_until > now:
+            if cell.crop and getattr(cell.crop, "grow_until", None) and cell.crop.grow_until > now:
                 cell.crop.grow_until = max(now, cell.crop.grow_until - speed)
             cell.water_cooldown_until = now + timedelta(seconds=WATER_COOLDOWN_DAYS * DAY_SECONDS)
             cell.wet_until = cell.water_cooldown_until
             save_player(self.uid)
             await interaction.response.edit_message(content=f"澆水完成，冷卻 {WATER_COOLDOWN_DAYS} 日", view=CellMenuView(self.uid, self.idx, self.version), embed=None)
+            return
+        if action == "use_hormone":
+            if s.hormone < 1:
+                await interaction.response.edit_message(content=f"{render_status(s)}\n生長激素不足。", view=CellMenuView(self.uid, self.idx, self.version), embed=None)
+                return
+            if not cell.crop or getattr(cell.crop, "crop_name", None) == "__WITHERED__":
+                await interaction.response.edit_message(content=f"{render_status(s)}\n此地塊沒有生長中的作物。", view=CellMenuView(self.uid, self.idx, self.version), embed=None)
+                return
+            if getattr(cell, "hormone_boosted", False):
+                await interaction.response.edit_message(content=f"{render_status(s)}\n此作物已使用過生長激素。", view=CellMenuView(self.uid, self.idx, self.version), embed=None)
+                return
+            s.hormone -= 1
+            cell.hormone_boosted = True
+            now = datetime.now(timezone.utc)
+            if getattr(cell.crop, "grow_until", None) and cell.crop.grow_until > now:
+                remaining = cell.crop.grow_until - now
+                cell.crop.grow_until = now + remaining * 0.7
+            save_player(self.uid)
+            await interaction.response.edit_message(content=f"{render_status(s)}\n已成功對作物使用生長激素，生長加速 30%！", view=CellMenuView(self.uid, self.idx, self.version), embed=None)
             return
         if action == "remove_machine":
             m = getattr(cell, "machine", None)
@@ -409,7 +569,7 @@ class CellActionSelect(discord.ui.Select):
             await interaction.response.edit_message(content=f"{render_status(s)}\n已拆除農機具", view=FarmMainView(self.uid, self.version), embed=None)
             return
         if action == "eat_crop":
-            if cell.crop.crop_name == "__WITHERED__":
+            if getattr(cell.crop, "crop_name", None) == "__WITHERED__":
                 await interaction.response.edit_message(content=f"{render_status(s)}\n枯萎作物不可食用", view=CellMenuView(self.uid, self.idx, self.version), embed=None)
                 return
             crop = CROP_MAP[cell.crop.crop_name]
@@ -419,18 +579,21 @@ class CellActionSelect(discord.ui.Select):
             await interaction.response.edit_message(content=f"{render_status(s)}\n已直接吃掉作物", view=FarmMainView(self.uid, self.version), embed=None)
             return
         if action == "harvest":
-            if cell.crop and cell.crop.crop_name == "__WITHERED__":
+            if cell.crop and getattr(cell.crop, "crop_name", None) == "__WITHERED__":
                 if not mature(cell.crop):
                     await interaction.response.edit_message(content=f"{render_status(s)}\n枯萎中，尚需等待3日處理", view=CellMenuView(self.uid, self.idx, self.version), embed=None)
                     return
                 cell.crop = None
                 s.materials["poop"] = s.materials.get("poop", 0) + 1
+                msg_parts = [f"{MATERIAL_MAP['poop']['emoji']}{MATERIAL_MAP['poop']['name']}"]
                 if random.random() < 0.5:
                     s.materials["deadwood"] = s.materials.get("deadwood", 0) + 1
+                    msg_parts.append(f"{MATERIAL_MAP['deadwood']['emoji']}{MATERIAL_MAP['deadwood']['name']}")
                 if random.random() < 0.5:
                     s.materials["roach"] = s.materials.get("roach", 0) + 1
+                    msg_parts.append(f"{MATERIAL_MAP['roach']['emoji']}{MATERIAL_MAP['roach']['name']}")
                 save_player(self.uid)
-                await interaction.response.edit_message(content=f"{render_status(s)}\n已清理枯萎作物，獲得💩並可能掉落🪾/🪳", view=FarmMainView(self.uid, self.version), embed=None)
+                await interaction.response.edit_message(content=f"{render_status(s)}\n已清理枯萎作物，獲得：" + "、".join(msg_parts), view=FarmMainView(self.uid, self.version), embed=None)
                 return
             if not cell.crop or not mature(cell.crop) or not consume_stamina(s, 10):
                 await interaction.response.edit_message(content=f"{render_status(s)}\n目前無法收割", view=CellMenuView(self.uid, self.idx, self.version), embed=None)
@@ -447,7 +610,6 @@ class CellActionSelect(discord.ui.Select):
                 await interaction.response.edit_message(content=f"{render_status(s)}\n養分不足，作物進入🪾枯萎狀態（3日後可清理回收）", view=FarmMainView(self.uid, self.version), embed=None)
                 return
             cell.nutrients -= req_nutrients
-            # 收成先進穀倉；若無法存放才直接換金
             stored = False
             remaining_qty = harvest_qty
             for slot in s.barn:
@@ -469,13 +631,13 @@ class CellActionSelect(discord.ui.Select):
                 fallback_unit = int(crop["level"] * 10 * (1 + crop["level"] * 0.8))
                 s.gold += fallback_unit * remaining_qty
             mult = 1.1 ** max(1, crop["level"])
-            for k,b in MATERIAL_BASE.items():
-                if random.random() < min(0.95,b*mult):
-                    s.materials[k] = s.materials.get(k,0)+1
+            for k, b in MATERIAL_BASE.items():
+                if random.random() < min(0.95, b * mult):
+                    s.materials[k] = s.materials.get(k, 0) + 1
             if random.random() < 0.5:
-                s.materials["deadwood"] = s.materials.get("deadwood",0)+1
+                s.materials["deadwood"] = s.materials.get("deadwood", 0) + 1
             if random.random() < 0.5:
-                s.materials["roach"] = s.materials.get("roach",0)+1
+                s.materials["roach"] = s.materials.get("roach", 0) + 1
             mastery["exp"] += 1
             need = easier(20 + crop["level"] * 10)
             if mastery["level"] < 4 and mastery["exp"] >= need:
@@ -488,7 +650,7 @@ class CellActionSelect(discord.ui.Select):
             return
         if action == "info":
             crop = CROP_MAP[cell.crop.crop_name]
-            rem = max(0, int((cell.crop.grow_until - datetime.now(timezone.utc)).total_seconds() / DAY_SECONDS))
+            rem = max(0, int((getattr(cell.crop, "grow_until", datetime.now(timezone.utc)) - datetime.now(timezone.utc)).total_seconds() / DAY_SECONDS))
             e = discord.Embed(title=f"地塊 #{self.idx+1}")
             e.add_field(name="作物", value=f"{crop['emoji']}{crop['name']} Lv.{crop['level']}")
             e.add_field(name="養分需求", value=str(crop["required_nutrients"]))
@@ -543,12 +705,12 @@ class BarnSlotSelect(discord.ui.Select):
         if not slot.unlocked:
             unlock_gold = easier(40)
             if s.gold >= unlock_gold and s.materials.get("bag_expand", 0) >= 1:
-                options.append(discord.SelectOption(label=f"解鎖欄位({unlock_gold}金+👜x1)", value="unlock"))
+                options.append(discord.SelectOption(label=f"解鎖欄位({unlock_gold}金+{MATERIAL_MAP['bag_expand']['emoji']}{MATERIAL_MAP['bag_expand']['name']}x1)", value="unlock"))
         else:
             up_gold = easier(40)
             up_bag = easier(slot.level * 5)
             if slot.level < 4 and s.gold >= up_gold and s.materials.get("bag_expand", 0) >= up_bag and s.stamina >= 10:
-                options.append(discord.SelectOption(label=f"升級欄位({up_gold}金+👜x{up_bag})", value="upgrade"))
+                options.append(discord.SelectOption(label=f"升級欄位({up_gold}金+{MATERIAL_MAP['bag_expand']['emoji']}{MATERIAL_MAP['bag_expand']['name']}x{up_bag})", value="upgrade"))
             if slot.crop_name and slot.amount > 0:
                 crop = CROP_MAP[slot.crop_name]
                 options.append(discord.SelectOption(label=f"吃掉1個 {crop['emoji']}{slot.crop_name}", value="eat"))
@@ -627,7 +789,6 @@ class SellConfirmView(discord.ui.View):
         qty = slot.amount
         total = self.unit_price * qty
         s.gold += total
-        # 市場過剩/稀缺狀態更新
         last_name, streak = s.same_crop_sale_streak
         if last_name == crop_name:
             s.same_crop_sale_streak = (crop_name, streak + qty)
@@ -672,20 +833,26 @@ class Bot(discord.Client):
                     last = s.last_sold_tick.get(name, -999999)
                     if s.ticks - last >= 60 and s.scarcity_bonus_left.get(name, 0) == 0:
                         s.scarcity_bonus_left[name] = 2
-                # 農機具自動化
                 for i, cell in enumerate(s.farm):
                     machine = getattr(cell, "machine", None)
                     if machine == "typhoon":
+                        now = datetime.now(timezone.utc)
                         for ni in neighbors_3x3(i):
-                            s.farm[ni].wet_until = datetime.now(timezone.utc) + timedelta(seconds=WATER_COOLDOWN_DAYS * DAY_SECONDS)
+                            target_cell = s.farm[ni]
+                            cooldown_until = getattr(target_cell, "water_cooldown_until", None)
+                            if not cooldown_until or now >= cooldown_until:
+                                speed = timedelta(seconds=WATER_SPEEDUP_DAYS * DAY_SECONDS)
+                                if getattr(target_cell, "crop", None) and getattr(target_cell.crop, "grow_until", None) and target_cell.crop.grow_until > now:
+                                    target_cell.crop.grow_until = max(now, target_cell.crop.grow_until - speed)
+                                target_cell.water_cooldown_until = now + timedelta(seconds=WATER_COOLDOWN_DAYS * DAY_SECONDS)
+                                target_cell.wet_until = target_cell.water_cooldown_until
                     elif machine == "billboard":
                         for ni in neighbors_3x3(i):
                             c2 = s.farm[ni]
                             c2.nutrients = min(c2.level * 30, c2.nutrients + 20)
                     elif machine == "lobster":
-                        # 1x1：所在格
                         if cell.crop and mature(cell.crop):
-                            cname = cell.crop.crop_name
+                            cname = getattr(cell.crop, "crop_name", None)
                             cell.crop = None
                             s.seeds[cname] = max(0, s.seeds.get(cname, 0) - 1)
                         if cell.crop is None:
@@ -695,6 +862,8 @@ class Bot(discord.Client):
                                 now = datetime.now(timezone.utc)
                                 cell.crop = CropInstance(cfg, now, now + timedelta(seconds=easier(crop["grow_days"]) * DAY_SECONDS))
                                 s.seeds[cfg] -= 1
+                                cell.visited_boosted = False
+                                cell.hormone_boosted = False
             save_all_players()
             await asyncio.sleep(10)
 
@@ -832,11 +1001,14 @@ class FriendsSelect(discord.ui.Select):
             if cool_until and now < datetime.fromisoformat(cool_until):
                 await interaction.response.edit_message(content="拜訪冷卻中（30日）", view=FriendsView(self.uid))
                 return
-            # 拜訪加速 +30% 且不可疊加
+            
+            # 統一拜訪加成演算法，且不可疊加
             for cell in target.farm:
-                if cell.crop and cell.crop.grow_until > now:
+                if cell.crop and getattr(cell.crop, "grow_until", None) and cell.crop.grow_until > now and not getattr(cell, "visited_boosted", False):
                     remaining = cell.crop.grow_until - now
                     cell.crop.grow_until = now + remaining * 0.7
+                    cell.visited_boosted = True
+                    
             s.visit_cooldowns[key] = (now + timedelta(seconds=30 * DAY_SECONDS)).isoformat()
             save_player(self.uid)
             save_player(fid)
@@ -939,111 +1111,151 @@ async def farmui(interaction: discord.Interaction):
     await interaction.response.send_message(f"{render_status(s)}\n（功能指令）", view=FarmUIView(interaction.user.id), ephemeral=True)
 
 
-
 class CraftSelect(discord.ui.Select):
-    def __init__(self, uid:int):
-        self.uid=uid
-        s=get_state(uid)
-        m=s.materials
-        opts=[]
-        if m.get("typhoon_eye",0)>=1 and m.get("umbrella",0)>=1: opts.append(discord.SelectOption(label="合成 ⛈️颱風眼催發器",value="mk_typhoon"))
-        if m.get("moai",0)>=1 and m.get("meteor",0)>=1 and m.get("deadwood",0)>=1: opts.append(discord.SelectOption(label="合成 🪧電影廣告招牌",value="mk_billboard"))
-        if m.get("roach",0)>=3: opts.append(discord.SelectOption(label="合成 💉生長激素",value="mk_hormone"))
-        if not opts: opts=[discord.SelectOption(label="目前無可合成",value="none")]
-        opts.append(discord.SelectOption(label="返回←",value="back"))
-        super().__init__(placeholder="合成菜單",options=opts)
-    async def callback(self,interaction):
-        s=get_state(self.uid);m=s.materials;v=self.values[0]
-        if v=="back": return await interaction.response.edit_message(content=render_status(s),view=FarmUIView(self.uid))
-        if v=="none": return await interaction.response.edit_message(content="目前無可合成",view=CraftView(self.uid))
-        if v=="mk_typhoon": m["typhoon_eye"]-=1;m["umbrella"]-=1; s.machines["typhoon"]=s.machines.get("typhoon",0)+1
-        if v=="mk_billboard": m["moai"]-=1;m["meteor"]-=1;m["deadwood"]-=1; s.machines["billboard"]=s.machines.get("billboard",0)+1
-        if v=="mk_hormone": m["roach"]-=3; s.hormone=getattr(s,"hormone",0)+1
-        save_player(self.uid); await interaction.response.edit_message(content=f"{render_status(s)}\n合成成功",view=CraftView(self.uid))
+    def __init__(self, uid: int):
+        self.uid = uid
+        s = get_state(uid)
+        m = s.materials
+        opts = []
+        if m.get("typhoon_eye", 0) >= 1 and m.get("umbrella", 0) >= 1:
+            opts.append(discord.SelectOption(label=f"合成 ⛈️颱風眼催發器 ({MATERIAL_MAP['typhoon_eye']['emoji']}x1 + {MATERIAL_MAP['umbrella']['emoji']}x1)", value="mk_typhoon"))
+        if m.get("moai", 0) >= 1 and m.get("meteor", 0) >= 1 and m.get("deadwood", 0) >= 1:
+            opts.append(discord.SelectOption(label=f"合成 🪧電影廣告招牌 ({MATERIAL_MAP['moai']['emoji']}x1 + {MATERIAL_MAP['meteor']['emoji']}x1 + {MATERIAL_MAP['deadwood']['emoji']}x1)", value="mk_billboard"))
+        if m.get("roach", 0) >= 3:
+            opts.append(discord.SelectOption(label=f"合成 💉生長激素 ({MATERIAL_MAP['roach']['emoji']}x3)", value="mk_hormone"))
+        if not opts:
+            opts = [discord.SelectOption(label="目前無可合成", value="none")]
+        opts.append(discord.SelectOption(label="返回←", value="back"))
+        super().__init__(placeholder="合成菜單", options=opts)
+
+    async def callback(self, interaction):
+        s = get_state(self.uid)
+        m = s.materials
+        v = self.values[0]
+        if v == "back":
+            return await interaction.response.edit_message(content=render_status(s), view=FarmUIView(self.uid))
+        if v == "none":
+            return await interaction.response.edit_message(content="目前無可合成", view=CraftView(self.uid))
+        if v == "mk_typhoon":
+            m["typhoon_eye"] -= 1
+            m["umbrella"] -= 1
+            s.machines["typhoon"] = s.machines.get("typhoon", 0) + 1
+        if v == "mk_billboard":
+            m["moai"] -= 1
+            m["meteor"] -= 1
+            m["deadwood"] -= 1
+            s.machines["billboard"] = s.machines.get("billboard", 0) + 1
+        if v == "mk_hormone":
+            m["roach"] -= 3
+            s.hormone = getattr(s, "hormone", 0) + 1
+        save_player(self.uid)
+        await interaction.response.edit_message(content=f"{render_status(s)}\n合成成功", view=CraftView(self.uid))
+
 
 class CraftView(discord.ui.View):
-    def __init__(self,uid:int): super().__init__(timeout=120); self.add_item(CraftSelect(uid))
+    def __init__(self, uid: int):
+        super().__init__(timeout=120)
+        self.add_item(CraftSelect(uid))
+
 
 class ToolsView(discord.ui.View):
-    def __init__(self,uid:int):
-        super().__init__(timeout=120); self.uid=uid
+    def __init__(self, uid: int):
+        super().__init__(timeout=120)
+        self.uid = uid
         self.add_item(ToolsSelect(uid))
 
+
 class ToolsSelect(discord.ui.Select):
-    def __init__(self, uid:int):
-        self.uid=uid
-        s=get_state(uid)
-        opts=[]
-        for i,c in enumerate(s.farm):
+    def __init__(self, uid: int):
+        self.uid = uid
+        s = get_state(uid)
+        opts = []
+        for i, c in enumerate(s.farm):
             if not c.unlocked:
                 continue
-            if getattr(c,"machine",None) in ("typhoon","billboard","lobster"):
+            if getattr(c, "machine", None) in ("typhoon", "billboard", "lobster"):
                 continue
             opts.append(discord.SelectOption(label=f"佈置到地塊#{i+1}", value=f"cell:{i}"))
-        for i,c in enumerate(s.farm):
-            if getattr(c,"machine",None)=="lobster":
+        for i, c in enumerate(s.farm):
+            if getattr(c, "machine", None) == "lobster":
                 opts.append(discord.SelectOption(label=f"設定🦞地塊#{i+1}單一種籽", value=f"cfg:{i}"))
-        if s.machines.get("typhoon",0)>0: opts.append(discord.SelectOption(label="選擇佈置 ⛈️颱風眼催發器", value="pick:typhoon"))
-        if s.machines.get("billboard",0)>0: opts.append(discord.SelectOption(label="選擇佈置 🪧電影廣告招牌", value="pick:billboard"))
-        if s.materials.get("lobster",0)>0: opts.append(discord.SelectOption(label="選擇佈置 🦞龍蝦", value="pick:lobster"))
+        if s.machines.get("typhoon", 0) > 0:
+            opts.append(discord.SelectOption(label="選擇佈置 ⛈️颱風眼催發器", value="pick:typhoon"))
+        if s.machines.get("billboard", 0) > 0:
+            opts.append(discord.SelectOption(label="選擇佈置 🪧電影廣告招牌", value="pick:billboard"))
+        if s.materials.get("lobster", 0) > 0:
+            opts.append(discord.SelectOption(label=f"選擇佈置 {MATERIAL_MAP['lobster']['emoji']}{MATERIAL_MAP['lobster']['name']}", value="pick:lobster"))
         opts.append(discord.SelectOption(label="返回←", value="back"))
         super().__init__(placeholder="農機具管理", options=opts[:25], min_values=1, max_values=1)
-    async def callback(self,interaction):
-        s=get_state(self.uid); v=self.values[0]
-        if v=="back":
-            return await interaction.response.edit_message(content=render_status(s),view=FarmUIView(self.uid))
+
+    async def callback(self, interaction):
+        s = get_state(self.uid)
+        v = self.values[0]
+        if v == "back":
+            return await interaction.response.edit_message(content=render_status(s), view=FarmUIView(self.uid))
         if v.startswith("pick:"):
-            s.tool_pick=v.split(":")[1]; save_player(self.uid)
+            s.tool_pick = v.split(":")[1]
+            save_player(self.uid)
             return await interaction.response.edit_message(content=f"已選擇 {s.tool_pick}，再選地塊佈置", view=ToolsView(self.uid))
         if v.startswith("cell:"):
-            idx=int(v.split(":")[1]); c=s.farm[idx]; pick=getattr(s,"tool_pick",None)
-            if not pick: return await interaction.response.edit_message(content="請先選擇要佈置的農機具", view=ToolsView(self.uid))
-            c.machine=pick
-            if pick=="typhoon": s.machines["typhoon"]=max(0,s.machines.get("typhoon",0)-1)
-            elif pick=="billboard": s.machines["billboard"]=max(0,s.machines.get("billboard",0)-1)
-            elif pick=="lobster": s.materials["lobster"]=max(0,s.materials.get("lobster",0)-1)
-            s.tool_pick=None
+            idx = int(v.split(":")[1])
+            c = s.farm[idx]
+            pick = getattr(s, "tool_pick", None)
+            if not pick:
+                return await interaction.response.edit_message(content="請先選擇要佈置的農機具", view=ToolsView(self.uid))
+            c.machine = pick
+            if pick == "typhoon":
+                s.machines["typhoon"] = max(0, s.machines.get("typhoon", 0) - 1)
+            elif pick == "billboard":
+                s.machines["billboard"] = max(0, s.machines.get("billboard", 0) - 1)
+            elif pick == "lobster":
+                s.materials["lobster"] = max(0, s.materials.get("lobster", 0) - 1)
+            s.tool_pick = None
             save_player(self.uid)
             return await interaction.response.edit_message(content=f"已佈置 {pick} 到地塊#{idx+1}", view=FarmUIView(self.uid))
         if v.startswith("cfg:"):
-            idx=int(v.split(":")[1])
+            idx = int(v.split(":")[1])
             return await interaction.response.edit_message(content=f"設定龍蝦地塊#{idx+1}自動種植種籽", view=LobsterConfigView(self.uid, idx))
 
 
 class LobsterSeedSelect(discord.ui.Select):
-    def __init__(self, uid:int, idx:int):
-        self.uid=uid; self.idx=idx
-        s=get_state(uid)
-        opts=[]
-        for name,qty in sorted(s.seeds.items(), key=lambda kv:(CROP_MAP[kv[0]]["level"],kv[0])):
-            if qty>0:
-                crop=CROP_MAP[name]
+    def __init__(self, uid: int, idx: int):
+        self.uid = uid
+        self.idx = idx
+        s = get_state(uid)
+        opts = []
+        for name, qty in sorted(s.seeds.items(), key=lambda kv: (CROP_MAP[kv[0]]["level"], kv[0])):
+            if qty > 0:
+                crop = CROP_MAP[name]
                 opts.append(discord.SelectOption(label=f"{crop['emoji']}{name} x{qty}", value=name))
         if not opts:
-            opts=[discord.SelectOption(label="目前無可設定種籽", value="none")]
+            opts = [discord.SelectOption(label="目前無可設定種籽", value="none")]
         opts.append(discord.SelectOption(label="清除設定", value="clear"))
         opts.append(discord.SelectOption(label="返回←", value="back"))
         super().__init__(placeholder=f"龍蝦地塊#{idx+1}單一種籽", options=opts[:25], min_values=1, max_values=1)
-    async def callback(self, interaction:discord.Interaction):
-        s=get_state(self.uid); v=self.values[0]
-        if v=="back":
+
+    async def callback(self, interaction: discord.Interaction):
+        s = get_state(self.uid)
+        v = self.values[0]
+        if v == "back":
             return await interaction.response.edit_message(content="農機具配置", view=ToolsView(self.uid))
-        if v=="none":
-            return await interaction.response.edit_message(content="目前無可設定種籽", view=LobsterConfigView(self.uid,self.idx))
-        if v=="clear":
+        if v == "none":
+            return await interaction.response.edit_message(content="目前無可設定種籽", view=LobsterConfigView(self.uid, self.idx))
+        if v == "clear":
             s.lobster_cfg.pop(str(self.idx), None)
             save_player(self.uid)
-            return await interaction.response.edit_message(content=f"已清除地塊#{self.idx+1}龍蝦種籽設定", view=LobsterConfigView(self.uid,self.idx))
+            return await interaction.response.edit_message(content=f"已清除地塊#{self.idx+1}龍蝦種籽設定", view=LobsterConfigView(self.uid, self.idx))
         s.lobster_cfg[str(self.idx)] = v
         save_player(self.uid)
-        crop=CROP_MAP[v]
-        return await interaction.response.edit_message(content=f"地塊#{self.idx+1}龍蝦已設定：{crop['emoji']}{v}", view=LobsterConfigView(self.uid,self.idx))
+        crop = CROP_MAP[v]
+        return await interaction.response.edit_message(content=f"地塊#{self.idx+1}龍蝦已設定：{crop['emoji']}{v}", view=LobsterConfigView(self.uid, self.idx))
 
 
 class LobsterConfigView(discord.ui.View):
-    def __init__(self, uid:int, idx:int):
+    def __init__(self, uid: int, idx: int):
         super().__init__(timeout=120)
         self.add_item(LobsterSeedSelect(uid, idx))
+
 
 if __name__ == "__main__":
     import os
