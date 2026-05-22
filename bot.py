@@ -630,13 +630,8 @@ class CellActionSelect(discord.ui.Select):
             prof_level = max(1, min(4, mastery["level"]))
             harvest_qty = 1 + prof_level
             req_nutrients = easier(crop["required_nutrients"])
-            if cell.nutrients < req_nutrients:
-                now = datetime.now(timezone.utc)
-                cell.crop = CropInstance("__WITHERED__", now, now + timedelta(seconds=3 * DAY_SECONDS))
-                save_player(self.uid)
-                await interaction.response.edit_message(content=f"{render_status(s)}\n養分不足，作物進入🪾枯萎狀態（3日後可清理回收）", view=FarmMainView(self.uid, self.version), embed=None)
-                return
             cell.nutrients -= req_nutrients
+            cell.nutrient_shortage_since = None
             stored = False
             remaining_qty = harvest_qty
             for slot in s.barn:
