@@ -87,6 +87,7 @@ MATERIAL_MAP = {
 GAME: dict[int, PlayerState] = {}
 DATA_DIR = "player_data"
 UI_VERSION: dict[int, int] = {}
+SELECT_PAGE_SIZE = 24
 
 
 def get_state(uid: int) -> PlayerState:
@@ -386,7 +387,7 @@ class FarmMainView(discord.ui.View):
 
 
 class CellActionSelect(discord.ui.Select):
-    def __init__(self, uid: int, idx: int, version: int):
+    def __init__(self, uid: int, idx: int, version: int, page: int = 0):
         self.uid, self.idx = uid, idx
         self.version = version
         s = get_state(uid)
@@ -437,7 +438,14 @@ class CellActionSelect(discord.ui.Select):
         if getattr(cell, "machine", None) in ("typhoon", "billboard", "lobster"):
             options.append(discord.SelectOption(label="拆除農機具", value="remove_machine"))
 
-        super().__init__(placeholder=f"地塊 #{idx+1} 選單", options=options, min_values=1, max_values=1)
+        total_pages = max(1, (len(options) + SELECT_PAGE_SIZE - 1) // SELECT_PAGE_SIZE)
+        page = max(0, min(page, total_pages - 1))
+        paged = options[page * SELECT_PAGE_SIZE:(page + 1) * SELECT_PAGE_SIZE]
+        if total_pages > 1 and page < total_pages - 1:
+            paged.append(discord.SelectOption(label="下一頁→", value=f"page:{page+1}"))
+        if total_pages > 1 and page > 0:
+            paged.append(discord.SelectOption(label="←上一頁", value=f"page:{page-1}"))
+        super().__init__(placeholder=f"地塊 #{idx+1} 選單（第{page+1}/{total_pages}頁）", options=paged, min_values=1, max_values=1)
 
     async def callback(self, interaction: discord.Interaction):
         if not is_ui_active(self.uid, self.version):
@@ -446,6 +454,10 @@ class CellActionSelect(discord.ui.Select):
         s = get_state(self.uid)
         cell = s.farm[self.idx]
         action = self.values[0]
+        if action.startswith("page:"):
+            page = int(action.split(":")[1])
+            await interaction.response.edit_message(content=render_status(s), view=CellMenuView(self.uid, self.idx, self.version, page=page), embed=None)
+            return
 
         if action == "back":
             await interaction.response.edit_message(content=render_status(s), view=FarmMainView(self.uid, self.version), embed=None)
@@ -492,7 +504,7 @@ class CellActionSelect(discord.ui.Select):
             save_player(self.uid)
             return await interaction.response.edit_message(content=f"{render_status(s)}\n已佈置 {crop_emoji(cell)} 於地塊#{self.idx+1}", view=FarmMainView(self.uid, self.version), embed=None)
         if action == "cfg_lobster":
-            return await interaction.response.edit_message(content=f"設定龍蝦地塊#{self.idx+1}單一種籽", view=LobsterConfigView(self.uid, self.idx))
+            return await interaction.response.edit_message(content=f"設定龍蝦地塊#{self.idx+1}單一種籽", view=LobsterConfigView(self.uid, self.idx, return_to_cell=True, cell_version=self.version))
         if action == "upgrade":
             if not consume_stamina(s, 10):
                 await interaction.response.send_message("體力不足", ephemeral=True)
@@ -659,9 +671,9 @@ class CellActionSelect(discord.ui.Select):
 
 
 class CellMenuView(discord.ui.View):
-    def __init__(self, uid: int, idx: int, version: int):
+    def __init__(self, uid: int, idx: int, version: int, page: int = 0):
         super().__init__(timeout=90)
-        self.add_item(CellActionSelect(uid, idx, version))
+        self.add_item(CellActionSelect(uid, idx, version, page=page))
 
 
 class BarnMainView(discord.ui.View):
@@ -1159,14 +1171,14 @@ class CraftView(discord.ui.View):
 
 
 class ToolsView(discord.ui.View):
-    def __init__(self, uid: int):
+    def __init__(self, uid: int, page: int = 0):
         super().__init__(timeout=120)
         self.uid = uid
-        self.add_item(ToolsSelect(uid))
+        self.add_item(ToolsSelect(uid, page=page))
 
 
 class ToolsSelect(discord.ui.Select):
-    def __init__(self, uid: int):
+    def __init__(self, uid: int, page: int = 0):
         self.uid = uid
         s = get_state(uid)
         opts = []
@@ -1186,11 +1198,21 @@ class ToolsSelect(discord.ui.Select):
         if s.materials.get("lobster", 0) > 0:
             opts.append(discord.SelectOption(label=f"選擇佈置 {MATERIAL_MAP['lobster']['emoji']}{MATERIAL_MAP['lobster']['name']}", value="pick:lobster"))
         opts.append(discord.SelectOption(label="返回←", value="back"))
-        super().__init__(placeholder="農機具管理", options=opts[:25], min_values=1, max_values=1)
+        total_pages = max(1, (len(opts) + SELECT_PAGE_SIZE - 1) // SELECT_PAGE_SIZE)
+        page = max(0, min(page, total_pages - 1))
+        paged = opts[page * SELECT_PAGE_SIZE:(page + 1) * SELECT_PAGE_SIZE]
+        if total_pages > 1 and page < total_pages - 1:
+            paged.append(discord.SelectOption(label="下一頁→", value=f"page:{page+1}"))
+        if total_pages > 1 and page > 0:
+            paged.append(discord.SelectOption(label="←上一頁", value=f"page:{page-1}"))
+        super().__init__(placeholder=f"農機具管理（第{page+1}/{total_pages}頁）", options=paged, min_values=1, max_values=1)
 
     async def callback(self, interaction):
         s = get_state(self.uid)
         v = self.values[0]
+        if v.startswith("page:"):
+            page = int(v.split(":")[1])
+            return await interaction.response.edit_message(content="農機具配置", view=ToolsView(self.uid, page=page))
         if v == "back":
             return await interaction.response.edit_message(content=render_status(s), view=FarmUIView(self.uid))
         if v.startswith("pick:"):
@@ -1219,9 +1241,11 @@ class ToolsSelect(discord.ui.Select):
 
 
 class LobsterSeedSelect(discord.ui.Select):
-    def __init__(self, uid: int, idx: int):
+    def __init__(self, uid: int, idx: int, page: int = 0, return_to_cell: bool = False, cell_version: int = 0):
         self.uid = uid
         self.idx = idx
+        self.return_to_cell = return_to_cell
+        self.cell_version = cell_version
         s = get_state(uid)
         opts = []
         for name, qty in sorted(s.seeds.items(), key=lambda kv: (CROP_MAP[kv[0]]["level"], kv[0])):
@@ -1232,29 +1256,41 @@ class LobsterSeedSelect(discord.ui.Select):
             opts = [discord.SelectOption(label="目前無可設定種籽", value="none")]
         opts.append(discord.SelectOption(label="清除設定", value="clear"))
         opts.append(discord.SelectOption(label="返回←", value="back"))
-        super().__init__(placeholder=f"龍蝦地塊#{idx+1}單一種籽", options=opts[:25], min_values=1, max_values=1)
+        total_pages = max(1, (len(opts) + SELECT_PAGE_SIZE - 1) // SELECT_PAGE_SIZE)
+        page = max(0, min(page, total_pages - 1))
+        paged = opts[page * SELECT_PAGE_SIZE:(page + 1) * SELECT_PAGE_SIZE]
+        if total_pages > 1 and page < total_pages - 1:
+            paged.append(discord.SelectOption(label="下一頁→", value=f"page:{page+1}"))
+        if total_pages > 1 and page > 0:
+            paged.append(discord.SelectOption(label="←上一頁", value=f"page:{page-1}"))
+        super().__init__(placeholder=f"龍蝦地塊#{idx+1}單一種籽（第{page+1}/{total_pages}頁）", options=paged, min_values=1, max_values=1)
 
     async def callback(self, interaction: discord.Interaction):
         s = get_state(self.uid)
         v = self.values[0]
+        if v.startswith("page:"):
+            page = int(v.split(":")[1])
+            return await interaction.response.edit_message(content="設定龍蝦種籽", view=LobsterConfigView(self.uid, self.idx, page=page, return_to_cell=self.return_to_cell, cell_version=self.cell_version))
         if v == "back":
+            if self.return_to_cell:
+                return await interaction.response.edit_message(content=render_status(s), view=CellMenuView(self.uid, self.idx, self.cell_version))
             return await interaction.response.edit_message(content="農機具配置", view=ToolsView(self.uid))
         if v == "none":
-            return await interaction.response.edit_message(content="目前無可設定種籽", view=LobsterConfigView(self.uid, self.idx))
+            return await interaction.response.edit_message(content="目前無可設定種籽", view=LobsterConfigView(self.uid, self.idx, return_to_cell=self.return_to_cell, cell_version=self.cell_version))
         if v == "clear":
             s.lobster_cfg.pop(str(self.idx), None)
             save_player(self.uid)
-            return await interaction.response.edit_message(content=f"已清除地塊#{self.idx+1}龍蝦種籽設定", view=LobsterConfigView(self.uid, self.idx))
+            return await interaction.response.edit_message(content=f"已清除地塊#{self.idx+1}龍蝦種籽設定", view=LobsterConfigView(self.uid, self.idx, return_to_cell=self.return_to_cell, cell_version=self.cell_version))
         s.lobster_cfg[str(self.idx)] = v
         save_player(self.uid)
         crop = CROP_MAP[v]
-        return await interaction.response.edit_message(content=f"地塊#{self.idx+1}龍蝦已設定：{crop['emoji']}{v}", view=LobsterConfigView(self.uid, self.idx))
+        return await interaction.response.edit_message(content=f"地塊#{self.idx+1}龍蝦已設定：{crop['emoji']}{v}", view=LobsterConfigView(self.uid, self.idx, return_to_cell=self.return_to_cell, cell_version=self.cell_version))
 
 
 class LobsterConfigView(discord.ui.View):
-    def __init__(self, uid: int, idx: int):
+    def __init__(self, uid: int, idx: int, page: int = 0, return_to_cell: bool = False, cell_version: int = 0):
         super().__init__(timeout=120)
-        self.add_item(LobsterSeedSelect(uid, idx))
+        self.add_item(LobsterSeedSelect(uid, idx, page=page, return_to_cell=return_to_cell, cell_version=cell_version))
 
 
 if __name__ == "__main__":
