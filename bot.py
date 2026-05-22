@@ -163,6 +163,7 @@ def farm_to_dict(farm) -> list:
             "water_cooldown_until": cell.water_cooldown_until.isoformat() if getattr(cell, "water_cooldown_until", None) else None,
             "visited_boosted": getattr(cell, "visited_boosted", False),
             "hormone_boosted": getattr(cell, "hormone_boosted", False),
+            "nutrient_shortage_since": cell.nutrient_shortage_since.isoformat() if getattr(cell, "nutrient_shortage_since", None) else None,
             "crop": None
         }
         if getattr(cell, "crop", None):
@@ -207,6 +208,8 @@ def dict_to_farm(farm_list, farm_obj) -> None:
         
         cell.visited_boosted = d.get("visited_boosted", False)
         cell.hormone_boosted = d.get("hormone_boosted", False)
+        ns = d.get("nutrient_shortage_since")
+        cell.nutrient_shortage_since = datetime.fromisoformat(ns) if ns else None
         
         crop_d = d.get("crop")
         if crop_d:
@@ -318,6 +321,16 @@ def cell_status_text(cell, idx: int) -> str:
     return f"地塊 #{idx+1}｜Lv.{cell.level}｜養分 {cell.nutrients}/{cell.level*30}"
 
 
+def cell_is_nutrient_shortage(cell) -> bool:
+    if not getattr(cell, "crop", None):
+        return False
+    crop_name = getattr(cell.crop, "crop_name", None)
+    if crop_name in (None, "__WITHERED__") or crop_name not in CROP_MAP:
+        return False
+    req = easier(CROP_MAP[crop_name]["required_nutrients"])
+    return cell.nutrients < req
+
+
 def market_unit_price(state: PlayerState, crop_name: str, level: int) -> tuple[int, int]:
     pct = 0
     last_name, streak = state.same_crop_sale_streak
@@ -364,10 +377,14 @@ class FarmMainView(discord.ui.View):
             is_wet = wet and datetime.now(timezone.utc) < wet
             if not cell.unlocked:
                 style = discord.ButtonStyle.secondary
-            elif is_wet:
-                style = discord.ButtonStyle.primary
+            elif cell.crop and getattr(cell.crop, "crop_name", None) == "__WITHERED__":
+                style = discord.ButtonStyle.danger
+            elif cell_is_nutrient_shortage(cell):
+                style = discord.ButtonStyle.danger
             elif cell.crop and mature(cell.crop):
                 style = discord.ButtonStyle.success
+            elif is_wet:
+                style = discord.ButtonStyle.primary
             else:
                 style = discord.ButtonStyle.secondary
             btn = discord.ui.Button(label=crop_emoji(cell), row=idx // 5, style=style)
@@ -592,11 +609,9 @@ class CellActionSelect(discord.ui.Select):
             return
         if action == "harvest":
             if cell.crop and getattr(cell.crop, "crop_name", None) == "__WITHERED__":
-                if not mature(cell.crop):
-                    await interaction.response.edit_message(content=f"{render_status(s)}\n枯萎中，尚需等待3日處理", view=CellMenuView(self.uid, self.idx, self.version), embed=None)
-                    return
                 cell.crop = None
                 s.materials["poop"] = s.materials.get("poop", 0) + 1
+                cell.nutrient_shortage_since = None
                 msg_parts = [f"{MATERIAL_MAP['poop']['emoji']}{MATERIAL_MAP['poop']['name']}"]
                 if random.random() < 0.5:
                     s.materials["deadwood"] = s.materials.get("deadwood", 0) + 1
@@ -846,9 +861,25 @@ class Bot(discord.Client):
                     if s.ticks - last >= 60 and s.scarcity_bonus_left.get(name, 0) == 0:
                         s.scarcity_bonus_left[name] = 2
                 for i, cell in enumerate(s.farm):
+                    now = datetime.now(timezone.utc)
+                    if getattr(cell, "crop", None):
+                        crop_name = getattr(cell.crop, "crop_name", None)
+                        if crop_name not in (None, "__WITHERED__") and crop_name in CROP_MAP:
+                            if cell_is_nutrient_shortage(cell):
+                                shortage_since = getattr(cell, "nutrient_shortage_since", None)
+                                if shortage_since is None:
+                                    cell.nutrient_shortage_since = now
+                                elif now - shortage_since >= timedelta(seconds=3 * DAY_SECONDS):
+                                    cell.crop = CropInstance("__WITHERED__", now, now)
+                                    cell.nutrient_shortage_since = None
+                            else:
+                                cell.nutrient_shortage_since = None
+                        else:
+                            cell.nutrient_shortage_since = None
+                    else:
+                        cell.nutrient_shortage_since = None
                     machine = getattr(cell, "machine", None)
                     if machine == "typhoon":
-                        now = datetime.now(timezone.utc)
                         for ni in neighbors_3x3(i):
                             target_cell = s.farm[ni]
                             cooldown_until = getattr(target_cell, "water_cooldown_until", None)
