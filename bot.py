@@ -87,6 +87,7 @@ MATERIAL_MAP = {
 GAME: dict[int, PlayerState] = {}
 DATA_DIR = "player_data"
 UI_VERSION: dict[int, int] = {}
+SELECT_PAGE_SIZE = 24
 
 
 def get_state(uid: int) -> PlayerState:
@@ -162,6 +163,7 @@ def farm_to_dict(farm) -> list:
             "water_cooldown_until": cell.water_cooldown_until.isoformat() if getattr(cell, "water_cooldown_until", None) else None,
             "visited_boosted": getattr(cell, "visited_boosted", False),
             "hormone_boosted": getattr(cell, "hormone_boosted", False),
+            "nutrient_shortage_since": cell.nutrient_shortage_since.isoformat() if getattr(cell, "nutrient_shortage_since", None) else None,
             "crop": None
         }
         if getattr(cell, "crop", None):
@@ -206,6 +208,8 @@ def dict_to_farm(farm_list, farm_obj) -> None:
         
         cell.visited_boosted = d.get("visited_boosted", False)
         cell.hormone_boosted = d.get("hormone_boosted", False)
+        ns = d.get("nutrient_shortage_since")
+        cell.nutrient_shortage_since = datetime.fromisoformat(ns) if ns else None
         
         crop_d = d.get("crop")
         if crop_d:
@@ -230,7 +234,7 @@ def dict_to_barn(barn_list, barn_obj) -> None:
 def state_to_dict(s: PlayerState) -> dict:
     return {
         "gold": s.gold, "stamina": s.stamina, "stamina_max": s.stamina_max, "fullness": s.fullness,
-        "moon_shard": s.moon_shard, "scroll": s.scroll, "poop": s.poop, "bag_expand": s.bag_expand,
+        "moon_shard": s.moon_shard,
         "proficiency_level": s.proficiency_level, "proficiency_exp": s.proficiency_exp, "seeds": s.seeds,
         "friends": s.friends, "visit_cooldowns": s.visit_cooldowns, "player_name": s.player_name, "crop_mastery": s.crop_mastery,
         "materials": getattr(s, "materials", {}), "machines": getattr(s, "machines", {}), "hormone": getattr(s, "hormone", 0), "lobster_cfg": getattr(s, "lobster_cfg", {}),
@@ -270,6 +274,10 @@ def load_player(uid: int) -> None:
     
     farm_list = d.pop("farm", None)
     barn_list = d.pop("barn", None)
+    # 移除舊版已棄用欄位（改由 materials 管理）
+    d.pop("scroll", None)
+    d.pop("poop", None)
+    d.pop("bag_expand", None)
     
     for k, v in d.items():
         setattr(s, k, v)
@@ -302,7 +310,13 @@ def crop_emoji(cell) -> str:
 
 def render_status(s: PlayerState) -> str:
     seed_text = "、".join(f"{CROP_MAP[n]['emoji']}{n}x{q}" for n, q in s.seeds.items() if q > 0) or "無"
-    return f"💰{s.gold} ⚡{s.stamina}/{s.stamina_max} 🍖{s.fullness}/100 | 種籽：{seed_text} | 素材：🧾破石法符x{s.materials.get('scroll',0)} 💩大便x{s.materials.get('poop',0)}"
+    key_mats = []
+    if s.materials.get("scroll", 0) > 0:
+        key_mats.append(f"🧾破石法符x{s.materials.get('scroll',0)}")
+    if s.materials.get("poop", 0) > 0:
+        key_mats.append(f"💩大便x{s.materials.get('poop',0)}")
+    mats_text = "、".join(key_mats) if key_mats else "無"
+    return f"💰{s.gold} ⚡{s.stamina}/{s.stamina_max} 🍖{s.fullness}/100 | 種籽：{seed_text} | 素材：{mats_text}"
 
 
 def bag_detail_text(s: PlayerState) -> str:
@@ -310,11 +324,30 @@ def bag_detail_text(s: PlayerState) -> str:
     mats_text = "、".join([f"{MATERIAL_MAP.get(k, {'emoji': '', 'name': k})['emoji']}{MATERIAL_MAP.get(k, {'emoji': '', 'name': k})['name']}x{v}" for k, v in mats]) if mats else "（目前無素材）"
     seeds = [(k, v) for k, v in s.seeds.items() if v > 0]
     seeds_text = "、".join([f"{CROP_MAP[k]['emoji']}{k}x{v}" for k, v in seeds]) if seeds else "（目前無種籽）"
-    return f"🎒背包詳情\n素材：{mats_text}\n種籽：{seeds_text}\n農機具：⛈️{s.machines.get('typhoon',0)} 🪧{s.machines.get('billboard',0)} 🦞{s.materials.get('lobster',0)}\n💉生長激素：{getattr(s,'hormone',0)}"
+    machine_parts = []
+    if s.machines.get("typhoon", 0) > 0:
+        machine_parts.append(f"⛈️颱風眼催發器x{s.machines.get('typhoon',0)}")
+    if s.machines.get("billboard", 0) > 0:
+        machine_parts.append(f"🪧電影廣告招牌x{s.machines.get('billboard',0)}")
+    if s.materials.get("lobster", 0) > 0:
+        machine_parts.append(f"{MATERIAL_MAP['lobster']['emoji']}{MATERIAL_MAP['lobster']['name']}x{s.materials.get('lobster',0)}")
+    machine_text = "、".join(machine_parts) if machine_parts else "（目前無農機具）"
+    hormone_text = f"💉生長激素x{getattr(s,'hormone',0)}" if getattr(s, "hormone", 0) > 0 else "（目前無生長激素）"
+    return f"🎒背包詳情\n素材：{mats_text}\n種籽：{seeds_text}\n農機具：{machine_text}\n生長激素：{hormone_text}"
 
 
 def cell_status_text(cell, idx: int) -> str:
     return f"地塊 #{idx+1}｜Lv.{cell.level}｜養分 {cell.nutrients}/{cell.level*30}"
+
+
+def cell_is_nutrient_shortage(cell) -> bool:
+    if not getattr(cell, "crop", None):
+        return False
+    crop_name = getattr(cell.crop, "crop_name", None)
+    if crop_name in (None, "__WITHERED__") or crop_name not in CROP_MAP:
+        return False
+    req = easier(CROP_MAP[crop_name]["required_nutrients"])
+    return cell.nutrients < req
 
 
 def market_unit_price(state: PlayerState, crop_name: str, level: int) -> tuple[int, int]:
@@ -363,10 +396,14 @@ class FarmMainView(discord.ui.View):
             is_wet = wet and datetime.now(timezone.utc) < wet
             if not cell.unlocked:
                 style = discord.ButtonStyle.secondary
-            elif is_wet:
-                style = discord.ButtonStyle.primary
+            elif cell.crop and getattr(cell.crop, "crop_name", None) == "__WITHERED__":
+                style = discord.ButtonStyle.danger
+            elif cell_is_nutrient_shortage(cell):
+                style = discord.ButtonStyle.danger
             elif cell.crop and mature(cell.crop):
                 style = discord.ButtonStyle.success
+            elif is_wet:
+                style = discord.ButtonStyle.primary
             else:
                 style = discord.ButtonStyle.secondary
             btn = discord.ui.Button(label=crop_emoji(cell), row=idx // 5, style=style)
@@ -386,7 +423,7 @@ class FarmMainView(discord.ui.View):
 
 
 class CellActionSelect(discord.ui.Select):
-    def __init__(self, uid: int, idx: int, version: int):
+    def __init__(self, uid: int, idx: int, version: int, page: int = 0):
         self.uid, self.idx = uid, idx
         self.version = version
         s = get_state(uid)
@@ -437,7 +474,14 @@ class CellActionSelect(discord.ui.Select):
         if getattr(cell, "machine", None) in ("typhoon", "billboard", "lobster"):
             options.append(discord.SelectOption(label="拆除農機具", value="remove_machine"))
 
-        super().__init__(placeholder=f"地塊 #{idx+1} 選單", options=options, min_values=1, max_values=1)
+        total_pages = max(1, (len(options) + SELECT_PAGE_SIZE - 1) // SELECT_PAGE_SIZE)
+        page = max(0, min(page, total_pages - 1))
+        paged = options[page * SELECT_PAGE_SIZE:(page + 1) * SELECT_PAGE_SIZE]
+        if total_pages > 1 and page < total_pages - 1:
+            paged.append(discord.SelectOption(label="下一頁→", value=f"page:{page+1}"))
+        if total_pages > 1 and page > 0:
+            paged.append(discord.SelectOption(label="←上一頁", value=f"page:{page-1}"))
+        super().__init__(placeholder=f"地塊 #{idx+1} 選單（第{page+1}/{total_pages}頁）", options=paged, min_values=1, max_values=1)
 
     async def callback(self, interaction: discord.Interaction):
         if not is_ui_active(self.uid, self.version):
@@ -446,6 +490,10 @@ class CellActionSelect(discord.ui.Select):
         s = get_state(self.uid)
         cell = s.farm[self.idx]
         action = self.values[0]
+        if action.startswith("page:"):
+            page = int(action.split(":")[1])
+            await interaction.response.edit_message(content=render_status(s), view=CellMenuView(self.uid, self.idx, self.version, page=page), embed=None)
+            return
 
         if action == "back":
             await interaction.response.edit_message(content=render_status(s), view=FarmMainView(self.uid, self.version), embed=None)
@@ -474,6 +522,8 @@ class CellActionSelect(discord.ui.Select):
             return
         if action.startswith("place:"):
             tool = action.split(":", 1)[1]
+            if getattr(cell, "machine", None) in ("typhoon", "billboard", "lobster"):
+                return await interaction.response.edit_message(content=f"{render_status(s)}\n此地塊已有農機具，請先拆除。", view=CellMenuView(self.uid, self.idx, self.version), embed=None)
             if tool == "typhoon":
                 if s.machines.get("typhoon", 0) <= 0:
                     return await interaction.response.edit_message(content=f"{render_status(s)}\n沒有可佈置的⛈️", view=CellMenuView(self.uid, self.idx, self.version), embed=None)
@@ -492,7 +542,7 @@ class CellActionSelect(discord.ui.Select):
             save_player(self.uid)
             return await interaction.response.edit_message(content=f"{render_status(s)}\n已佈置 {crop_emoji(cell)} 於地塊#{self.idx+1}", view=FarmMainView(self.uid, self.version), embed=None)
         if action == "cfg_lobster":
-            return await interaction.response.edit_message(content=f"設定龍蝦地塊#{self.idx+1}單一種籽", view=LobsterConfigView(self.uid, self.idx))
+            return await interaction.response.edit_message(content=f"設定龍蝦地塊#{self.idx+1}單一種籽", view=LobsterConfigView(self.uid, self.idx, return_to_cell=True, cell_version=self.version))
         if action == "upgrade":
             if not consume_stamina(s, 10):
                 await interaction.response.send_message("體力不足", ephemeral=True)
@@ -580,11 +630,9 @@ class CellActionSelect(discord.ui.Select):
             return
         if action == "harvest":
             if cell.crop and getattr(cell.crop, "crop_name", None) == "__WITHERED__":
-                if not mature(cell.crop):
-                    await interaction.response.edit_message(content=f"{render_status(s)}\n枯萎中，尚需等待3日處理", view=CellMenuView(self.uid, self.idx, self.version), embed=None)
-                    return
                 cell.crop = None
                 s.materials["poop"] = s.materials.get("poop", 0) + 1
+                cell.nutrient_shortage_since = None
                 msg_parts = [f"{MATERIAL_MAP['poop']['emoji']}{MATERIAL_MAP['poop']['name']}"]
                 if random.random() < 0.5:
                     s.materials["deadwood"] = s.materials.get("deadwood", 0) + 1
@@ -603,13 +651,8 @@ class CellActionSelect(discord.ui.Select):
             prof_level = max(1, min(4, mastery["level"]))
             harvest_qty = 1 + prof_level
             req_nutrients = easier(crop["required_nutrients"])
-            if cell.nutrients < req_nutrients:
-                now = datetime.now(timezone.utc)
-                cell.crop = CropInstance("__WITHERED__", now, now + timedelta(seconds=3 * DAY_SECONDS))
-                save_player(self.uid)
-                await interaction.response.edit_message(content=f"{render_status(s)}\n養分不足，作物進入🪾枯萎狀態（3日後可清理回收）", view=FarmMainView(self.uid, self.version), embed=None)
-                return
             cell.nutrients -= req_nutrients
+            cell.nutrient_shortage_since = None
             stored = False
             remaining_qty = harvest_qty
             for slot in s.barn:
@@ -659,9 +702,9 @@ class CellActionSelect(discord.ui.Select):
 
 
 class CellMenuView(discord.ui.View):
-    def __init__(self, uid: int, idx: int, version: int):
+    def __init__(self, uid: int, idx: int, version: int, page: int = 0):
         super().__init__(timeout=90)
-        self.add_item(CellActionSelect(uid, idx, version))
+        self.add_item(CellActionSelect(uid, idx, version, page=page))
 
 
 class BarnMainView(discord.ui.View):
@@ -834,9 +877,25 @@ class Bot(discord.Client):
                     if s.ticks - last >= 60 and s.scarcity_bonus_left.get(name, 0) == 0:
                         s.scarcity_bonus_left[name] = 2
                 for i, cell in enumerate(s.farm):
+                    now = datetime.now(timezone.utc)
+                    if getattr(cell, "crop", None):
+                        crop_name = getattr(cell.crop, "crop_name", None)
+                        if crop_name not in (None, "__WITHERED__") and crop_name in CROP_MAP:
+                            if cell_is_nutrient_shortage(cell):
+                                shortage_since = getattr(cell, "nutrient_shortage_since", None)
+                                if shortage_since is None:
+                                    cell.nutrient_shortage_since = now
+                                elif now - shortage_since >= timedelta(seconds=3 * DAY_SECONDS):
+                                    cell.crop = CropInstance("__WITHERED__", now, now)
+                                    cell.nutrient_shortage_since = None
+                            else:
+                                cell.nutrient_shortage_since = None
+                        else:
+                            cell.nutrient_shortage_since = None
+                    else:
+                        cell.nutrient_shortage_since = None
                     machine = getattr(cell, "machine", None)
                     if machine == "typhoon":
-                        now = datetime.now(timezone.utc)
                         for ni in neighbors_3x3(i):
                             target_cell = s.farm[ni]
                             cooldown_until = getattr(target_cell, "water_cooldown_until", None)
@@ -1159,14 +1218,14 @@ class CraftView(discord.ui.View):
 
 
 class ToolsView(discord.ui.View):
-    def __init__(self, uid: int):
+    def __init__(self, uid: int, page: int = 0):
         super().__init__(timeout=120)
         self.uid = uid
-        self.add_item(ToolsSelect(uid))
+        self.add_item(ToolsSelect(uid, page=page))
 
 
 class ToolsSelect(discord.ui.Select):
-    def __init__(self, uid: int):
+    def __init__(self, uid: int, page: int = 0):
         self.uid = uid
         s = get_state(uid)
         opts = []
@@ -1186,11 +1245,21 @@ class ToolsSelect(discord.ui.Select):
         if s.materials.get("lobster", 0) > 0:
             opts.append(discord.SelectOption(label=f"選擇佈置 {MATERIAL_MAP['lobster']['emoji']}{MATERIAL_MAP['lobster']['name']}", value="pick:lobster"))
         opts.append(discord.SelectOption(label="返回←", value="back"))
-        super().__init__(placeholder="農機具管理", options=opts[:25], min_values=1, max_values=1)
+        total_pages = max(1, (len(opts) + SELECT_PAGE_SIZE - 1) // SELECT_PAGE_SIZE)
+        page = max(0, min(page, total_pages - 1))
+        paged = opts[page * SELECT_PAGE_SIZE:(page + 1) * SELECT_PAGE_SIZE]
+        if total_pages > 1 and page < total_pages - 1:
+            paged.append(discord.SelectOption(label="下一頁→", value=f"page:{page+1}"))
+        if total_pages > 1 and page > 0:
+            paged.append(discord.SelectOption(label="←上一頁", value=f"page:{page-1}"))
+        super().__init__(placeholder=f"農機具管理（第{page+1}/{total_pages}頁）", options=paged, min_values=1, max_values=1)
 
     async def callback(self, interaction):
         s = get_state(self.uid)
         v = self.values[0]
+        if v.startswith("page:"):
+            page = int(v.split(":")[1])
+            return await interaction.response.edit_message(content="農機具配置", view=ToolsView(self.uid, page=page))
         if v == "back":
             return await interaction.response.edit_message(content=render_status(s), view=FarmUIView(self.uid))
         if v.startswith("pick:"):
@@ -1200,6 +1269,8 @@ class ToolsSelect(discord.ui.Select):
         if v.startswith("cell:"):
             idx = int(v.split(":")[1])
             c = s.farm[idx]
+            if getattr(c, "machine", None) in ("typhoon", "billboard", "lobster"):
+                return await interaction.response.edit_message(content="此地塊已有農機具，請先拆除後再佈置", view=ToolsView(self.uid))
             pick = getattr(s, "tool_pick", None)
             if not pick:
                 return await interaction.response.edit_message(content="請先選擇要佈置的農機具", view=ToolsView(self.uid))
@@ -1219,9 +1290,11 @@ class ToolsSelect(discord.ui.Select):
 
 
 class LobsterSeedSelect(discord.ui.Select):
-    def __init__(self, uid: int, idx: int):
+    def __init__(self, uid: int, idx: int, page: int = 0, return_to_cell: bool = False, cell_version: int = 0):
         self.uid = uid
         self.idx = idx
+        self.return_to_cell = return_to_cell
+        self.cell_version = cell_version
         s = get_state(uid)
         opts = []
         for name, qty in sorted(s.seeds.items(), key=lambda kv: (CROP_MAP[kv[0]]["level"], kv[0])):
@@ -1232,29 +1305,41 @@ class LobsterSeedSelect(discord.ui.Select):
             opts = [discord.SelectOption(label="目前無可設定種籽", value="none")]
         opts.append(discord.SelectOption(label="清除設定", value="clear"))
         opts.append(discord.SelectOption(label="返回←", value="back"))
-        super().__init__(placeholder=f"龍蝦地塊#{idx+1}單一種籽", options=opts[:25], min_values=1, max_values=1)
+        total_pages = max(1, (len(opts) + SELECT_PAGE_SIZE - 1) // SELECT_PAGE_SIZE)
+        page = max(0, min(page, total_pages - 1))
+        paged = opts[page * SELECT_PAGE_SIZE:(page + 1) * SELECT_PAGE_SIZE]
+        if total_pages > 1 and page < total_pages - 1:
+            paged.append(discord.SelectOption(label="下一頁→", value=f"page:{page+1}"))
+        if total_pages > 1 and page > 0:
+            paged.append(discord.SelectOption(label="←上一頁", value=f"page:{page-1}"))
+        super().__init__(placeholder=f"龍蝦地塊#{idx+1}單一種籽（第{page+1}/{total_pages}頁）", options=paged, min_values=1, max_values=1)
 
     async def callback(self, interaction: discord.Interaction):
         s = get_state(self.uid)
         v = self.values[0]
+        if v.startswith("page:"):
+            page = int(v.split(":")[1])
+            return await interaction.response.edit_message(content="設定龍蝦種籽", view=LobsterConfigView(self.uid, self.idx, page=page, return_to_cell=self.return_to_cell, cell_version=self.cell_version))
         if v == "back":
+            if self.return_to_cell:
+                return await interaction.response.edit_message(content=render_status(s), view=CellMenuView(self.uid, self.idx, self.cell_version))
             return await interaction.response.edit_message(content="農機具配置", view=ToolsView(self.uid))
         if v == "none":
-            return await interaction.response.edit_message(content="目前無可設定種籽", view=LobsterConfigView(self.uid, self.idx))
+            return await interaction.response.edit_message(content="目前無可設定種籽", view=LobsterConfigView(self.uid, self.idx, return_to_cell=self.return_to_cell, cell_version=self.cell_version))
         if v == "clear":
             s.lobster_cfg.pop(str(self.idx), None)
             save_player(self.uid)
-            return await interaction.response.edit_message(content=f"已清除地塊#{self.idx+1}龍蝦種籽設定", view=LobsterConfigView(self.uid, self.idx))
+            return await interaction.response.edit_message(content=f"已清除地塊#{self.idx+1}龍蝦種籽設定", view=LobsterConfigView(self.uid, self.idx, return_to_cell=self.return_to_cell, cell_version=self.cell_version))
         s.lobster_cfg[str(self.idx)] = v
         save_player(self.uid)
         crop = CROP_MAP[v]
-        return await interaction.response.edit_message(content=f"地塊#{self.idx+1}龍蝦已設定：{crop['emoji']}{v}", view=LobsterConfigView(self.uid, self.idx))
+        return await interaction.response.edit_message(content=f"地塊#{self.idx+1}龍蝦已設定：{crop['emoji']}{v}", view=LobsterConfigView(self.uid, self.idx, return_to_cell=self.return_to_cell, cell_version=self.cell_version))
 
 
 class LobsterConfigView(discord.ui.View):
-    def __init__(self, uid: int, idx: int):
+    def __init__(self, uid: int, idx: int, page: int = 0, return_to_cell: bool = False, cell_version: int = 0):
         super().__init__(timeout=120)
-        self.add_item(LobsterSeedSelect(uid, idx))
+        self.add_item(LobsterSeedSelect(uid, idx, page=page, return_to_cell=return_to_cell, cell_version=cell_version))
 
 
 if __name__ == "__main__":
