@@ -465,7 +465,7 @@ class CellActionSelect(discord.ui.Select):
             options.append(discord.SelectOption(label="直接吃掉(10%飽食恢復)", value="eat_crop"))
             if s.stamina >= 10 and s.materials.get("poop", 0) >= 1:
                 options.append(discord.SelectOption(label=f"施肥(+20養分，{MATERIAL_MAP['poop']['emoji']}{MATERIAL_MAP['poop']['name']}x1)", value="fertilize"))
-            if mature(cell.crop) and s.stamina >= 10:
+            if cell.crop and mature(cell.crop) and s.stamina >= 10:
                 options.append(discord.SelectOption(label="收割", value="harvest"))
             options.append(discord.SelectOption(label="更多資訊", value="info"))
             options.append(discord.SelectOption(label="返回農地←", value="back"))
