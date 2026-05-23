@@ -374,6 +374,22 @@ def furnace_seed_amount(crop_level: int) -> int:
     return 1
 
 
+def furnace_bonus_material() -> str | None:
+    bonus_pool = [
+        ("roach", 0.10),
+        ("deadwood", 0.10),
+        ("poop", 0.15),
+        ("scroll", 0.10),
+    ]
+    r = random.random()
+    acc = 0.0
+    for key, chance in bonus_pool:
+        acc += chance
+        if r < acc:
+            return key
+    return None
+
+
 def neighbors_3x3(idx: int) -> list[int]:
     r, c = divmod(idx, 5)
     out = []
@@ -954,9 +970,14 @@ class FarmUIView(discord.ui.View):
         c = furnace_draw_crop()
         amount = furnace_seed_amount(c["level"])
         s.seeds[c["name"]] = s.seeds.get(c["name"], 0) + amount
+        bonus = furnace_bonus_material()
+        bonus_text = ""
+        if bonus:
+            s.materials[bonus] = s.materials.get(bonus, 0) + 1
+            bonus_text = f"\n額外獲得 {MATERIAL_MAP[bonus]['emoji']}{MATERIAL_MAP[bonus]['name']} x1"
         save_player(self.uid)
         await interaction.response.edit_message(
-            content=f"{render_status(s)}\n轉化爐花費 {furnace_cost} 金幣，獲得 {c['emoji']}{c['name']} 種籽 x{amount}（{LEVEL_TAG.get(c['level'],'普通')}）",
+            content=f"{render_status(s)}\n轉化爐花費 {furnace_cost} 金幣，獲得 {c['emoji']}{c['name']} 種籽 x{amount}（{LEVEL_TAG.get(c['level'],'普通')}）{bonus_text}",
             view=FarmUIView(self.uid),
         )
 
