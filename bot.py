@@ -503,6 +503,8 @@ class CellActionSelect(discord.ui.Select):
             return
         if action.startswith("place:"):
             tool = action.split(":", 1)[1]
+            if getattr(cell, "machine", None) in ("typhoon", "billboard", "lobster"):
+                return await interaction.response.edit_message(content=f"{render_status(s)}\n此地塊已有農機具，請先拆除。", view=CellMenuView(self.uid, self.idx, self.version), embed=None)
             if tool == "typhoon":
                 if s.machines.get("typhoon", 0) <= 0:
                     return await interaction.response.edit_message(content=f"{render_status(s)}\n沒有可佈置的⛈️", view=CellMenuView(self.uid, self.idx, self.version), embed=None)
@@ -1248,6 +1250,8 @@ class ToolsSelect(discord.ui.Select):
         if v.startswith("cell:"):
             idx = int(v.split(":")[1])
             c = s.farm[idx]
+            if getattr(c, "machine", None) in ("typhoon", "billboard", "lobster"):
+                return await interaction.response.edit_message(content="此地塊已有農機具，請先拆除後再佈置", view=ToolsView(self.uid))
             pick = getattr(s, "tool_pick", None)
             if not pick:
                 return await interaction.response.edit_message(content="請先選擇要佈置的農機具", view=ToolsView(self.uid))
